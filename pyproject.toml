@@ -28,9 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/rebuno/rebuno"
-Repository = "https://github.com/rebuno/rebuno"
-Documentation = "https://github.com/rebuno/rebuno/tree/main/docs"
+Homepage = "https://github.com/rebuno/sdk-python"
+Repository = "https://github.com/rebuno/sdk-python"
+Documentation = "https://github.com/rebuno/rebuno/blob/main/docs/sdk/python.md"
 
 [project.optional-dependencies]
 dev = [
