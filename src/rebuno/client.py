@@ -189,6 +189,7 @@ class RebunoClient:
         self,
         status: ExecutionStatus | None = None,
         agent_id: str = "",
+        labels: dict[str, str] | None = None,
         limit: int = 50,
         cursor: str = "",
     ) -> ListExecutionsResult:
@@ -197,6 +198,7 @@ class RebunoClient:
         Args:
             status: Filter by execution status.
             agent_id: Filter by agent ID.
+            labels: Filter by labels (key-value pairs, all must match).
             limit: Maximum number of results to return.
             cursor: Pagination cursor from a previous response.
 
@@ -208,6 +210,8 @@ class RebunoClient:
             params["status"] = status.value
         if agent_id:
             params["agent_id"] = agent_id
+        if labels:
+            params["label"] = [f"{k}:{v}" for k, v in labels.items()]
         if cursor:
             params["cursor"] = cursor
         resp = self._request("GET", "/v0/executions", params=params)

@@ -157,6 +157,7 @@ class ExecutionSummary(BaseModel):
     id: str
     status: ExecutionStatus
     agent_id: str
+    labels: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
