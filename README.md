@@ -11,82 +11,94 @@ pip install rebuno
 ## Quick Start
 
 ```python
-from rebuno import RebunoClient
+from rebuno import Client
 
-client = RebunoClient(base_url="http://localhost:8080")
+client = Client(base_url="http://localhost:8080")
 
-# Create an execution
-result = client.create_execution(agent_id="my-agent", input={"task": "hello"})
-print(result["execution_id"])
+execution = await client.create("my-agent", input={"prompt": "hello"})
+print(execution.id)
 ```
+
+`Client` defaults to `REBUNO_URL` and `REBUNO_API_KEY` env vars when no args are passed.
 
 ## Building an Agent
 
 ```python
-from rebuno.agent import BaseAgent
+from rebuno import Agent, execution
 
-class MyAgent(BaseAgent):
-    def process(self, ctx):
-        result = ctx.invoke_tool("web.search", {"query": "hello"})
-        return {"answer": result}
+agent = Agent("my-agent")
 
-agent = MyAgent(
-    agent_id="my-agent",
-    kernel_url="http://localhost:8080",
-)
-agent.run()
+async def process(prompt: str) -> dict:
+    print("running execution", execution.id)
+    return {"answer": prompt.upper()}
+
+agent.run(process)
+```
+
+The handler signature is the input schema — `process(prompt: str)` makes `prompt` a required field. Pass a `pydantic.BaseModel` parameter for validation, or `input: dict` for the raw claim. Use `from rebuno import execution` to access the current execution's id, session_id, history, etc.
+
+## Tools
+
+```python
+from rebuno import tool
+
+@tool("web.search")
+async def search(query: str, limit: int = 10) -> list[str]:
+    return [...]
+```
+
+Tools are plain module-level functions. The wrapper submits an intent to the kernel before running the body. Hand them to your framework as a list:
+
+```python
+graph = create_agent(llm, [search, ...])
 ```
 
 ## Building a Runner
 
 ```python
-from rebuno.runner import BaseRunner
+from rebuno import Runner, tool
 
-class MyRunner(BaseRunner):
-    def execute(self, tool_id, arguments):
-        if tool_id == "web.search":
-            return {"results": ["..."]}
-        raise ValueError(f"Unknown tool: {tool_id}")
+@tool("compute.heavy")
+async def heavy(data: str) -> str:
+    return process(data)
 
-runner = MyRunner(
-    runner_id="my-runner",
-    kernel_url="http://localhost:8080",
-    capabilities=["web.search"],
-)
-runner.run()
+Runner("compute-1").run()
 ```
 
-## MCP Support
+The runner advertises every `@tool` it imports, publishes their schemas to the kernel, and services job assignments. `@tool(remote=True)` lets you declare a stub in agent code for type-checked imperative calls.
 
-Connect to MCP servers to expose their tools through the kernel:
+## Local MCP
 
-```bash
-pip install rebuno[mcp]
-```
+The agent connects to the MCP server directly. Install with `pip install rebuno[mcp]`:
 
 ```python
-import asyncio
-from rebuno import AsyncBaseRunner
+from rebuno import MCPServer
 
-runner = AsyncBaseRunner(
-    runner_id="mcp-tools",
-    kernel_url="http://localhost:8080",
+github = MCPServer(
+    "github",
+    url="https://api.githubcopilot.com/mcp/",
+    headers={"Authorization": "Bearer xxx"},
 )
-runner.mcp_server(
-    "filesystem",
-    command="npx",
-    args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-)
-asyncio.run(runner.run())
+
+# Inside your handler:
+graph = create_agent(llm, [..., *github.tools])
 ```
 
-Agents can also use MCP tools as local tools:
+## Remote tools (incl. remote MCP)
+
+Discover tools that runners host elsewhere — the agent never holds credentials, never opens MCP transport. Schemas come from the kernel directory.
 
 ```python
-agent.mcp_server("filesystem", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
+from rebuno import remote
+
+github  = remote.Tools("github")
+compute = remote.Tools("compute")
+
+# Inside your handler:
+graph = create_agent(llm, [..., *github.tools, *compute.tools])
 ```
 
-See the [full documentation](https://github.com/rebuno/rebuno/tree/main/docs) for details on partial failure tolerance, config-based setup, and runner MCP routing.
+Each call routes through the kernel to whichever runner advertises that tool ID. Works for any source — `@tool` Python functions on a runner, MCP servers hosted by a runner, or both.
 
 ## Documentation
 

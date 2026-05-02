@@ -11,7 +11,9 @@ class TestRebunoError:
 class TestAPIError:
     def test_attributes(self):
         e = APIError(
-            message="not found", code="NOT_FOUND", status_code=404,
+            message="not found",
+            code="NOT_FOUND",
+            status_code=404,
             details={"id": "exec-1"},
         )
         assert e.code == "NOT_FOUND"
@@ -34,8 +36,10 @@ class TestPolicyError:
 class TestToolError:
     def test_attributes(self):
         e = ToolError(
-            message="execution failed", tool_id="web.search",
-            step_id="step-1", retryable=True,
+            message="execution failed",
+            tool_id="web.search",
+            step_id="step-1",
+            retryable=True,
         )
         assert e.tool_id == "web.search"
         assert e.step_id == "step-1"

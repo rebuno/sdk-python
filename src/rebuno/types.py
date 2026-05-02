@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class ExecutionStatus(str, Enum):
+class ExecutionStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     BLOCKED = "blocked"
@@ -16,7 +16,7 @@ class ExecutionStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class StepStatus(str, Enum):
+class StepStatus(StrEnum):
     PENDING = "pending"
     DISPATCHED = "dispatched"
     RUNNING = "running"
@@ -55,37 +55,17 @@ class Event(BaseModel):
     causation_id: str = ""
     correlation_id: str = ""
 
+    @property
+    def tool_id(self) -> str:
+        if isinstance(self.payload, dict):
+            return self.payload.get("tool_id", "")
+        return ""
 
-class Step(BaseModel):
-    id: str
-    execution_id: str
-    tool_id: str
-    tool_version: int = 1
-    status: StepStatus = StepStatus.PENDING
-    attempt: int = 1
-    max_attempts: int = 3
-    arguments: Any = None
-    result: Any = None
-    error: str = ""
-    retryable: bool = False
-    idempotency_key: str = ""
-    deadline: datetime | None = None
-    runner_id: str = ""
-    created_at: datetime | None = None
-    dispatched_at: datetime | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-
-
-class Intent(BaseModel):
-    type: str
-    tool_id: str = ""
-    arguments: Any = None
-    idempotency_key: str = ""
-    signal_type: str = ""
-    output: Any = None
-    error: str = ""
-    remote: bool = False
+    @property
+    def arguments(self) -> Any:
+        if isinstance(self.payload, dict):
+            return self.payload.get("arguments")
+        return None
 
 
 class IntentResult(BaseModel):
@@ -104,34 +84,6 @@ class Job(BaseModel):
     tool_version: int = 1
     arguments: Any = None
     deadline: datetime | None = None
-
-
-class JobResult(BaseModel):
-    job_id: str
-    execution_id: str
-    step_id: str
-    success: bool
-    data: Any = None
-    error: str = ""
-    retryable: bool = False
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    runner_id: str = ""
-
-
-class Signal(BaseModel):
-    id: str = ""
-    execution_id: str = ""
-    signal_type: str
-    payload: Any = None
-    created_at: str = ""
-
-
-class ToolSummary(BaseModel):
-    id: str
-    version: int = 1
-    name: str
-    description: str = ""
 
 
 class HistoryEntry(BaseModel):
@@ -165,11 +117,6 @@ class ExecutionSummary(BaseModel):
 class ListExecutionsResult(BaseModel):
     executions: list[ExecutionSummary]
     next_cursor: str = ""
-
-
-class EventList(BaseModel):
-    events: list[Event]
-    latest_sequence: int
 
 
 class SignalResult(BaseModel):

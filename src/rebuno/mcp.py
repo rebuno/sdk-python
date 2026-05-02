@@ -1,228 +1,256 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import uuid
+from collections.abc import Callable
 from typing import Any
 
+from rebuno.errors import PolicyError, RebunoError, ToolError
+from rebuno.execution import _get_current
+
 try:
-    from fastmcp import Client
+    from fastmcp import Client as _FastMCPClient
     from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
+
+    _HAS_FASTMCP = True
 except ImportError:
-    Client = None  # type: ignore[assignment,misc]
+    _FastMCPClient = None  # type: ignore[assignment,misc]
     StdioTransport = None  # type: ignore[assignment,misc]
     StreamableHttpTransport = None  # type: ignore[assignment,misc]
+    _HAS_FASTMCP = False
 
 logger = logging.getLogger("rebuno.mcp")
 
 
-class McpConnection:
-    """Wraps a single FastMCP Client connection to an MCP server."""
+HeadersLike = dict[str, str] | Callable[[], dict[str, str]]
+
+
+_REGISTRY: list[MCPServer] = []
+
+
+class MCPServer:
+    """A locally-connected MCP server.
+
+    The agent (or runner) holds the credentials and opens the MCP transport
+    directly. Tool calls route through the kernel for policy/audit but the
+    MCP I/O happens in this process.
+
+    To consume tools that *runners* host (without holding credentials in the
+    agent), use ``rebuno.remote.Tools(prefix)`` instead.
+
+    Args:
+        name: Display name; also the default tool ID prefix.
+        url: HTTP MCP server URL. Mutually exclusive with ``command``.
+        command: Stdio MCP command. Mutually exclusive with ``url``.
+        args: Args for the stdio command.
+        env: Env vars for the stdio subprocess.
+        headers: HTTP headers — dict or zero-arg callable for token refresh.
+        prefix: Tool ID prefix override (defaults to ``name``).
+    """
 
     def __init__(
         self,
         name: str,
-        prefix: str,
-        client: Any,
-    ):
-        self.name = name
-        self.prefix = prefix
-        self._client = client
-        self.connected = False
-        self._ctx: Any = None
-
-    async def connect(self) -> None:
-        self._ctx = await self._client.__aenter__()
-        self.connected = True
-        logger.info("MCP server connected: %s", self.name)
-
-    async def disconnect(self) -> None:
-        if self._ctx is not None:
-            await self._client.__aexit__(None, None, None)
-            self._ctx = None
-            self.connected = False
-            logger.info("MCP server disconnected: %s", self.name)
-
-    async def list_tools(self) -> list[dict[str, Any]]:
-        raw_tools = await self._client.list_tools()
-        return [
-            {
-                "id": f"{self.prefix}.{t.name}",
-                "name": t.name,
-                "description": getattr(t, "description", "") or "",
-                "input_schema": getattr(t, "inputSchema", {}),
-            }
-            for t in raw_tools
-        ]
-
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> Any:
-        result = await self._client.call_tool(tool_name, arguments or {})
-        texts = [
-            item.text if getattr(item, "type", None) == "text" else str(item)
-            for item in result.content
-        ]
-        if len(texts) == 1:
-            return texts[0]
-        return "\n".join(texts)
-
-
-class McpManager:
-    """Manages multiple MCP server connections with partial failure tolerance."""
-
-    def __init__(self) -> None:
-        self._connections: dict[str, McpConnection] = {}
-        self._failed: dict[str, Exception] = {}
-        self._retry_task: asyncio.Task[None] | None = None
-
-    def add_server(
-        self,
-        name: str,
         *,
+        url: str = "",
         command: str = "",
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
-        url: str = "",
-        headers: dict[str, str] | None = None,
+        headers: HeadersLike | None = None,
         prefix: str = "",
-    ) -> None:
-        if Client is None:
-            raise ImportError(
-                "fastmcp is required for MCP support. Install it with: pip install rebuno[mcp]"
-            )
+    ):
+        if not _HAS_FASTMCP:
+            raise ImportError("fastmcp is required for MCP support. Install with: pip install 'rebuno[mcp]'")
+        if not (url or command):
+            raise ValueError(f"Server '{name}' requires either url or command")
 
-        if not prefix:
-            prefix = name
+        self.name = name
+        self.prefix = prefix or name
+        self.url = url
+        self.command = command
+        self.args = args or []
+        self.env = env or {}
+        self.headers = headers
 
-        if url:
-            transport = StreamableHttpTransport(url=url, headers=headers) if headers else url
-            client = Client(transport)
-        elif command:
-            transport = StdioTransport(
-                command=command,
-                args=args or [],
-                env=env,
-            )
-            client = Client(transport)
-        else:
-            raise ValueError(f"Server '{name}' must specify either 'url' or 'command'")
+        self._tools: list[Callable[..., Any]] | None = None
+        self._client: Any = None
+        self._connected = False
+        self._connect_lock = asyncio.Lock()
 
-        self._connections[name] = McpConnection(name=name, prefix=prefix, client=client)
+        _REGISTRY.append(self)
 
-    def add_servers_from_config(self, config: dict[str, Any]) -> None:
-        servers = config.get("mcpServers", config)
-        for name, server_config in servers.items():
-            if "url" in server_config:
-                self.add_server(
-                    name,
-                    url=server_config["url"],
-                    headers=server_config.get("headers"),
-                )
-            elif "command" in server_config:
-                self.add_server(
-                    name,
-                    command=server_config["command"],
-                    args=server_config.get("args"),
-                    env=server_config.get("env"),
-                )
-            else:
-                raise ValueError(f"Server '{name}' must have 'url' or 'command'")
-
-    async def connect_all(self) -> None:
-        self._failed.clear()
-        for name, conn in self._connections.items():
-            try:
-                await conn.connect()
-            except Exception as e:
-                logger.warning("MCP server '%s' failed to connect: %s", name, e)
-                self._failed[name] = e
-
-        connected = [n for n, c in self._connections.items() if c.connected]
-        if not connected:
+    @property
+    def tools(self) -> list[Callable[..., Any]]:
+        """List of wrapped callables. Connection is lazy: this triggers connect
+        and discovery on first access.
+        """
+        if self._tools is None:
             raise RuntimeError(
-                f"All MCP servers failed to connect: {self._failed}"
+                f"MCP server '{self.name}' has not been connected. "
+                "Call await server.connect() or run inside agent.run() (which "
+                "auto-connects all registered MCP servers at startup)."
             )
+        return self._tools
 
-        logger.info(
-            "MCP connections ready: %d connected, %d failed",
-            len(connected),
-            len(self._failed),
-        )
+    async def connect(self) -> None:
+        """Establish the MCP connection and discover tools.
 
-    async def disconnect_all(self) -> None:
-        if self._retry_task and not self._retry_task.done():
-            self._retry_task.cancel()
+        Idempotent: safe to call multiple times. Called automatically by
+        ``Agent.run()`` for every registered server.
+        """
+        async with self._connect_lock:
+            if self._connected:
+                return
+            self._client = self._build_client()
+            await self._client.__aenter__()
+            raw_tools = await self._client.list_tools()
+            self._tools = [self._wrap_tool(t) for t in raw_tools]
+            self._connected = True
+            logger.info("MCP server connected: %s (%d tools)", self.name, len(self._tools))
+
+    async def disconnect(self) -> None:
+        if self._client is not None and self._connected:
             try:
-                await self._retry_task
-            except asyncio.CancelledError:
-                pass
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                logger.debug("Error disconnecting MCP server %s", self.name, exc_info=True)
+        self._client = None
+        self._connected = False
+        self._tools = None
 
-        for conn in self._connections.values():
-            if conn.connected:
-                try:
-                    await conn.disconnect()
-                except Exception:
-                    logger.debug("Error disconnecting %s", conn.name, exc_info=True)
+    def _build_client(self) -> Any:
+        if self.url:
+            # Resolve headers at connect time so each (re)connect picks up
+            # fresh values from a callable headers source.
+            resolved = self._resolve_headers() if self.headers else None
+            transport: Any = StreamableHttpTransport(url=self.url, headers=resolved) if resolved else self.url
+            return _FastMCPClient(transport)
+        transport = StdioTransport(command=self.command, args=self.args, env=self.env)
+        return _FastMCPClient(transport)
 
-    def start_retry_loop(self, on_reconnect: Any = None, interval: float = 30.0) -> None:
-        if self._retry_task and not self._retry_task.done():
-            return
-        self._retry_task = asyncio.create_task(
-            self._retry_failed(on_reconnect, interval)
+    def _resolve_headers(self) -> dict[str, str]:
+        if callable(self.headers):
+            return self.headers()
+        return self.headers or {}
+
+    def _wrap_tool(self, raw: Any) -> Callable[..., Any]:
+        tool_name = raw.name
+        tool_id = f"{self.prefix}.{tool_name}"
+        description = getattr(raw, "description", "") or ""
+        schema = getattr(raw, "inputSchema", None) or {}
+        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        required = set(schema.get("required", [])) if isinstance(schema, dict) else set()
+
+        params = []
+        for prop_name in props:
+            kind = inspect.Parameter.KEYWORD_ONLY
+            default = inspect.Parameter.empty if prop_name in required else None
+            params.append(inspect.Parameter(prop_name, kind, default=default))
+
+        server = self
+
+        async def wrapper(**kwargs: Any) -> Any:
+            state = _get_current()
+            if state is None:
+                raise RuntimeError(f"MCP tool '{tool_id}' called outside an active execution.")
+            # Strip None values: LLMs often fill optional fields with null,
+            # but MCP servers typically reject null for typed parameters.
+            args = {k: v for k, v in kwargs.items() if v is not None}
+            return await _invoke_mcp(state, server, tool_id, tool_name, args)
+
+        wrapper.__name__ = tool_name
+        wrapper.__doc__ = description
+        wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+        wrapper.__rebuno_tool_id__ = tool_id  # type: ignore[attr-defined]
+        wrapper.__rebuno_mcp__ = True  # type: ignore[attr-defined]
+        wrapper.__rebuno_input_schema__ = schema  # type: ignore[attr-defined]
+        return wrapper
+
+
+async def _invoke_mcp(
+    state: Any,
+    server: MCPServer,
+    tool_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> Any:
+    """Submit invoke_tool intent, then call the MCP server, then report result."""
+    idempotency_key = f"{state.id}:{tool_id}:{uuid.uuid4().hex[:8]}"
+    intent_result = await state._client.submit_intent(
+        execution_id=state.id,
+        session_id=state.session_id,
+        intent_type="invoke_tool",
+        tool_id=tool_id,
+        arguments=arguments,
+        idempotency_key=idempotency_key,
+        remote=False,
+    )
+    if not intent_result.accepted:
+        raise PolicyError(intent_result.error or "Intent denied by policy")
+    if not intent_result.step_id:
+        raise RebunoError("No step_id returned for MCP invoke_tool intent")
+
+    step_id = intent_result.step_id
+    if intent_result.pending_approval:
+        approval = await state._wait(
+            "approval",
+            step_id,
+            f"Timed out waiting for approval (step_id={step_id})",
         )
+        if not approval.get("approved", False):
+            raise PolicyError("Tool invocation denied by human approval")
 
-    async def _retry_failed(self, on_reconnect: Any, interval: float) -> None:
-        while self._failed:
-            await asyncio.sleep(interval)
-            reconnected = []
-            for name in list(self._failed):
-                conn = self._connections.get(name)
-                if conn is None:
-                    continue
-                try:
-                    await conn.connect()
-                    reconnected.append(name)
-                    logger.info("MCP server '%s' reconnected", name)
-                except Exception:
-                    logger.debug("Retry failed for '%s'", name, exc_info=True)
+    try:
+        raw = await server._client.call_tool(tool_name, arguments)
+        output = _flatten_mcp_result(raw)
+    except Exception as e:
+        await state._client.report_step_result(
+            execution_id=state.id,
+            session_id=state.session_id,
+            step_id=step_id,
+            success=False,
+            error=str(e),
+        )
+        raise ToolError(message=str(e), tool_id=tool_id, step_id=step_id) from e
 
-            for name in reconnected:
-                del self._failed[name]
+    await state._client.report_step_result(
+        execution_id=state.id,
+        session_id=state.session_id,
+        step_id=step_id,
+        success=True,
+        data=output,
+    )
+    return output
 
-            if reconnected and on_reconnect:
-                await on_reconnect()
 
-    async def all_tools(self) -> list[dict[str, Any]]:
-        tools = []
-        for conn in self._connections.values():
-            if conn.connected:
-                tools.extend(await conn.list_tools())
-        return tools
+def _flatten_mcp_result(result: Any) -> str:
+    content = getattr(result, "content", None)
+    if content is None:
+        return str(result)
+    texts = [item.text if getattr(item, "type", None) == "text" else str(item) for item in content]
+    return texts[0] if len(texts) == 1 else "\n".join(texts)
 
-    async def all_tool_ids(self) -> list[str]:
-        tools = await self.all_tools()
-        return [t["id"] for t in tools]
 
-    def _parse_tool_id(self, prefixed_tool_id: str) -> tuple[str, str]:
-        parts = prefixed_tool_id.split(".", 1)
-        if len(parts) != 2:
-            raise ValueError(f"Invalid tool ID format: {prefixed_tool_id} (expected 'prefix.tool_name')")
-        return parts[0], parts[1]
-
-    def _find_connection(self, prefix: str) -> McpConnection | None:
-        for conn in self._connections.values():
-            if conn.prefix == prefix and conn.connected:
-                return conn
-        return None
-
-    def has_tool(self, prefixed_tool_id: str) -> bool:
+async def connect_all() -> None:
+    """Connect every registered MCP server. Used by Agent.run() startup."""
+    for server in _REGISTRY:
         try:
-            prefix, _ = self._parse_tool_id(prefixed_tool_id)
-        except ValueError:
-            return False
-        return self._find_connection(prefix) is not None
+            await server.connect()
+        except Exception:
+            logger.warning("MCP server %s failed to connect; will retry lazily", server.name, exc_info=True)
 
-    async def call_tool(self, prefixed_tool_id: str, arguments: dict[str, Any] | None = None) -> Any:
-        prefix, tool_name = self._parse_tool_id(prefixed_tool_id)
-        conn = self._find_connection(prefix)
-        if conn is None:
-            raise ValueError(f"No MCP connection found for prefix '{prefix}'")
-        return await conn.call_tool(tool_name, arguments)
+
+async def disconnect_all() -> None:
+    for server in _REGISTRY:
+        await server.disconnect()
+
+
+def all_servers() -> list[MCPServer]:
+    return list(_REGISTRY)
+
+
+def _clear_registry() -> None:
+    """Test helper. Do not use in production."""
+    _REGISTRY.clear()

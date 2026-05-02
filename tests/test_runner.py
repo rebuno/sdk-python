@@ -1,166 +1,145 @@
-import json
-from unittest.mock import MagicMock
+"""Runner: capability collection and job dispatch into the @tool registry."""
+
+from __future__ import annotations
 
 import pytest
-
-from rebuno._internal import SSEEvent
-from rebuno.client import RebunoClient
-from rebuno.runner import BaseRunner
-
 from conftest import make_job
 
-
-def _make_runner(**kwargs):
-    """Helper to create a concrete BaseRunner subclass instance."""
-
-    class TestRunner(BaseRunner):
-        def execute(self, tool_id, arguments):
-            return {"result": "ok"}
-
-    defaults = {"runner_id": "runner-1", "kernel_url": "http://localhost:8080"}
-    defaults.update(kwargs)
-    return TestRunner(**defaults)
+from rebuno import Runner, tool
 
 
-class TestBaseRunnerInit:
-    def test_defaults(self):
-        runner = _make_runner(capabilities=["web.search"])
-        assert runner.runner_id == "runner-1"
-        assert runner.name == "runner-1"  # defaults to runner_id
-        assert runner.capabilities == ["web.search"]
-        assert runner.consumer_id.startswith("runner-1-")
-        assert len(runner.consumer_id) == len("runner-1-") + 8
-        assert runner._running is False
-        runner._client.close()
-
-    def test_empty_runner_id_raises(self):
-        with pytest.raises(ValueError, match="runner_id must not be empty"):
-            _make_runner(runner_id="")
-
-    def test_empty_kernel_url_raises(self):
-        with pytest.raises(ValueError, match="kernel_url must not be empty"):
-            _make_runner(kernel_url="")
+def _runner() -> Runner:
+    return Runner("r-1", kernel_url="http://test", api_key="")
 
 
-class TestBaseRunnerHandleJob:
-    def test_success(self):
-        runner = _make_runner()
-        runner._client = MagicMock(spec=RebunoClient)
+def test_runner_capabilities_default_to_registered_tools():
+    @tool("a.one")
+    async def one() -> int:
+        return 1
 
-        job = make_job()
-        runner._handle_job(job)
+    @tool("a.two")
+    async def two() -> int:
+        return 2
 
-        runner._client.step_started.assert_called_once_with(
-            step_id="step-1",
-            execution_id="exec-1",
-            runner_id="runner-1",
-        )
-        runner._client.submit_result.assert_called_once()
-        call_kwargs = runner._client.submit_result.call_args.kwargs
-        assert call_kwargs["success"] is True
-        assert call_kwargs["data"] == {"result": "ok"}
-
-    def test_execute_error_submits_failure(self):
-        class FailRunner(BaseRunner):
-            def execute(self, tool_id, arguments):
-                raise ValueError("unknown tool")
-
-        runner = FailRunner(runner_id="runner-1", kernel_url="http://localhost:8080")
-        runner._client = MagicMock(spec=RebunoClient)
-
-        runner._handle_job(make_job())
-
-        call_kwargs = runner._client.submit_result.call_args.kwargs
-        assert call_kwargs["success"] is False
-        assert "unknown tool" in call_kwargs["error"]
-        assert call_kwargs["retryable"] is False
-
-    def test_retryable_error_sets_retryable_flag(self):
-        class RetryableError(Exception):
-            retryable = True
-
-        class FailRunner(BaseRunner):
-            def execute(self, tool_id, arguments):
-                raise RetryableError("temporary failure")
-
-        runner = FailRunner(runner_id="runner-1", kernel_url="http://localhost:8080")
-        runner._client = MagicMock(spec=RebunoClient)
-
-        runner._handle_job(make_job())
-
-        call_kwargs = runner._client.submit_result.call_args.kwargs
-        assert call_kwargs["retryable"] is True
-
-    def test_step_started_failure_does_not_prevent_execution(self):
-        runner = _make_runner()
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._client.step_started.side_effect = Exception("network error")
-
-        runner._handle_job(make_job())
-
-        runner._client.submit_result.assert_called_once()
-        call_kwargs = runner._client.submit_result.call_args.kwargs
-        assert call_kwargs["success"] is True
-
-    def test_submit_result_failure_on_success_path_is_swallowed(self):
-        runner = _make_runner()
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._client.submit_result.side_effect = Exception("network down")
-
-        # Should not raise
-        runner._handle_job(make_job())
-
-    def test_submit_result_failure_on_error_path_is_swallowed(self):
-        class FailRunner(BaseRunner):
-            def execute(self, tool_id, arguments):
-                raise ValueError("tool failed")
-
-        runner = FailRunner(runner_id="runner-1", kernel_url="http://localhost:8080")
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._client.submit_result.side_effect = Exception("network down")
-
-        # Should not raise even when both execute() and submit_result() fail
-        runner._handle_job(make_job())
+    r = _runner()
+    caps = r._capabilities()
+    assert set(caps) == {"a.one", "a.two"}
 
 
-class TestBaseRunnerConnectAndProcess:
-    def test_dispatches_job_assigned_events(self):
-        runner = _make_runner(capabilities=["web.search"])
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._running = True
+def test_runner_explicit_capabilities_override_registry():
+    @tool("a.skipped")
+    async def skipped():
+        return None
 
-        job_data = json.dumps(make_job().model_dump())
-        events = [SSEEvent(type="job.assigned", data=job_data)]
-        runner._client.runner_stream.return_value = iter(events)
+    r = Runner("r-1", kernel_url="http://test", capabilities=["other.tool"])
+    assert r._capabilities() == ["other.tool"]
 
-        runner._connect_and_process()
 
-        runner._client.submit_result.assert_called_once()
+def test_runner_capabilities_dedupe_preserves_order():
+    @tool("a.one")
+    async def one():
+        return None
 
-    def test_ignores_non_job_events(self):
-        runner = _make_runner()
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._running = True
+    @tool("a.two")
+    async def two():
+        return None
 
-        events = [
-            SSEEvent(type="heartbeat", data="{}"),
-            SSEEvent(type="runner.registered", data="{}"),
-        ]
-        runner._client.runner_stream.return_value = iter(events)
+    r = _runner()
+    caps = r._capabilities()
+    assert caps == ["a.one", "a.two"]
+    assert len(set(caps)) == len(caps)
 
-        runner._connect_and_process()
 
-        runner._client.submit_result.assert_not_called()
+async def test_dispatch_calls_registered_tool_function_directly():
+    """Runner._dispatch bypasses the @tool wrapper (which would gate via
+    kernel intent) and calls the raw function. This is correct: the runner
+    IS the kernel-side execution."""
+    captured = {}
 
-    def test_stops_when_running_is_false(self):
-        runner = _make_runner()
-        runner._client = MagicMock(spec=RebunoClient)
-        runner._running = False
+    @tool("compute.echo")
+    async def echo(value: str) -> str:
+        captured["value"] = value
+        return value.upper()
 
-        job_data = json.dumps(make_job().model_dump())
-        events = [SSEEvent(type="job.assigned", data=job_data)]
-        runner._client.runner_stream.return_value = iter(events)
+    r = _runner()
+    result = await r._dispatch("compute.echo", {"value": "hi"})
+    assert result == "HI"
+    assert captured["value"] == "hi"
 
-        runner._connect_and_process()
 
-        runner._client.submit_result.assert_not_called()
+async def test_dispatch_supports_sync_tool_functions():
+    @tool("compute.sync")
+    def sync_op(x: int) -> int:
+        return x * 2
+
+    r = _runner()
+    assert await r._dispatch("compute.sync", {"x": 21}) == 42
+
+
+async def test_dispatch_unknown_tool_raises_runtime_error():
+    r = _runner()
+    with pytest.raises(RuntimeError, match="No handler registered"):
+        await r._dispatch("nonexistent.tool", {})
+
+
+async def test_dispatch_with_non_dict_arguments_passes_empty_kwargs():
+    @tool("compute.noargs")
+    async def noargs() -> str:
+        return "ok"
+
+    r = _runner()
+    assert await r._dispatch("compute.noargs", None) == "ok"
+    assert await r._dispatch("compute.noargs", "scalar") == "ok"
+
+
+class _SpyRunnerClient:
+    def __init__(self):
+        self.results: list[dict] = []
+
+    async def step_started(self, *args, **kwargs): ...
+
+    async def submit_job_result(self, **kwargs):
+        self.results.append(kwargs)
+
+
+async def test_handle_job_success_submits_data():
+    @tool("compute.add")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    r = _runner()
+    spy = _SpyRunnerClient()
+    r._client = spy  # type: ignore[assignment]
+    job = make_job(tool_id="compute.add", arguments={"a": 2, "b": 3})
+
+    await r._handle_job(job)
+
+    assert len(spy.results) == 1
+    assert spy.results[0]["success"] is True
+    assert spy.results[0]["data"] == 5
+    assert spy.results[0]["job_id"] == job.id
+
+
+async def test_handle_job_failure_submits_error_with_retryable_flag():
+    @tool("compute.bad")
+    async def bad():
+        raise ValueError("oops")
+
+    r = _runner()
+    spy = _SpyRunnerClient()
+    r._client = spy  # type: ignore[assignment]
+
+    await r._handle_job(make_job(tool_id="compute.bad", arguments={}))
+    assert spy.results[0]["success"] is False
+    assert "oops" in spy.results[0]["error"]
+    assert spy.results[0]["retryable"] is False
+
+
+async def test_handle_job_unknown_tool_reports_failure():
+    r = _runner()
+    spy = _SpyRunnerClient()
+    r._client = spy  # type: ignore[assignment]
+
+    await r._handle_job(make_job(tool_id="ghost.tool", arguments={}))
+    assert spy.results[0]["success"] is False
+    assert "ghost.tool" in spy.results[0]["error"]

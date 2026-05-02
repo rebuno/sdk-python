@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rebuno"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python SDK for the Rebuno execution runtime"
 readme = "README.md"
 license = "MIT"
@@ -36,6 +36,7 @@ Documentation = "https://github.com/rebuno/rebuno/blob/main/docs/sdk/python.md"
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "fastmcp>=2.0.0",
 ]
 mcp = [
     "fastmcp>=2.0.0",
@@ -43,3 +44,31 @@ mcp = [
 
 [tool.hatch.build]
 sources = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.12",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = [".workspace", ".venv", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+
+[tool.ruff.format]
+quote-style = "double"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Any
 
 
@@ -35,10 +36,7 @@ class APIError(RebunoError):
         return f"[{self.code}] {super().__str__()} (HTTP {self.status_code})"
 
     def __repr__(self) -> str:
-        return (
-            f"APIError(status_code={self.status_code!r}, "
-            f"code={self.code!r}, message={super().__str__()!r})"
-        )
+        return f"APIError(status_code={self.status_code!r}, code={self.code!r}, message={super().__str__()!r})"
 
 
 class ValidationError(APIError):
@@ -82,6 +80,4 @@ class ToolError(RebunoError):
         self.retryable = retryable
 
     def __repr__(self) -> str:
-        return (
-            f"ToolError(tool_id={self.tool_id!r}, step_id={self.step_id!r})"
-        )
+        return f"ToolError(tool_id={self.tool_id!r}, step_id={self.step_id!r})"
