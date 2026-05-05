@@ -91,11 +91,13 @@ Discover tools that runners host elsewhere — the agent never holds credentials
 ```python
 from rebuno import remote
 
-github  = remote.Tools("github")
-compute = remote.Tools("compute")
+github_tools  = remote.Tools("github")
+compute_tools = remote.Tools("compute")
 
 # Inside your handler:
-graph = create_agent(llm, [..., *github.tools, *compute.tools])
+graph = create_agent(llm, [..., *github_tools, *compute_tools])
+# or cherry-pick by short name:
+graph = create_agent(llm, [..., github_tools["create_pr"], compute_tools["heavy"]])
 ```
 
 Each call routes through the kernel to whichever runner advertises that tool ID. Works for any source — `@tool` Python functions on a runner, MCP servers hosted by a runner, or both.

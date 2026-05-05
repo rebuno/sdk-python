@@ -77,15 +77,25 @@ async def test_connect_fetches_schemas_and_builds_callables():
 
     assert client.last_prefix == "github"
     assert len(handle.tools) == 2
-    names = {fn.__name__ for fn in handle.tools}
-    assert names == {"create_pr", "issue_read"}
+    assert set(handle.tools) == {"create_pr", "issue_read"}
+    # Tools handle itself is iterable (yields callables) and indexable
+    assert {fn.__name__ for fn in handle} == {"create_pr", "issue_read"}
+    assert "create_pr" in handle
+    assert handle["create_pr"] is handle.tools["create_pr"]
+
+
+async def test_getitem_raises_for_unknown_tool():
+    handle = remote.Tools("github")
+    await handle.connect(_StubClient(SAMPLE_SCHEMAS))
+    with pytest.raises(KeyError, match="no tool 'nope'"):
+        _ = handle["nope"]
 
 
 async def test_wrapped_callable_has_synthesized_signature():
     handle = remote.Tools("github")
     await handle.connect(_StubClient(SAMPLE_SCHEMAS))
 
-    create_pr = next(fn for fn in handle.tools if fn.__name__ == "create_pr")
+    create_pr = handle["create_pr"]
     sig = inspect.signature(create_pr)
     assert list(sig.parameters) == ["owner", "repo", "title"]
     for name in ("owner", "repo", "title"):
@@ -106,17 +116,19 @@ async def test_connect_is_idempotent():
     assert handle.tools is first
 
 
-async def test_connect_with_no_matching_tools_yields_empty_list():
+async def test_connect_with_no_matching_tools_yields_empty_mapping():
     handle = remote.Tools("nonexistent")
     await handle.connect(_StubClient(SAMPLE_SCHEMAS))
-    assert handle.tools == []
+    assert handle.tools == {}
+    assert len(handle) == 0
+    assert list(handle) == []
 
 
 async def test_calling_remote_tool_outside_execution_raises():
     handle = remote.Tools("github")
     await handle.connect(_StubClient(SAMPLE_SCHEMAS))
 
-    create_pr = next(fn for fn in handle.tools if fn.__name__ == "create_pr")
+    create_pr = handle["create_pr"]
     with pytest.raises(RuntimeError, match="outside an active execution"):
         await create_pr(owner="o", repo="r", title="t")
 
@@ -126,7 +138,7 @@ async def test_calling_remote_tool_submits_intent_and_awaits_result():
     client = _StubClient(SAMPLE_SCHEMAS)
     await handle.connect(client)
 
-    create_pr = next(fn for fn in handle.tools if fn.__name__ == "create_pr")
+    create_pr = handle["create_pr"]
 
     # Build a minimal ExecutionState-shaped object so the wrapper can call
     # _client.submit_intent and _wait correctly.
@@ -165,8 +177,8 @@ async def test_connect_all_resolves_every_registered_handle():
     ]
     await remote.connect_all(_StubClient(schemas))
 
-    assert {fn.__rebuno_tool_id__ for fn in a.tools} == {"github.create_pr", "github.issue_read"}
-    assert {fn.__rebuno_tool_id__ for fn in b.tools} == {"compute.heavy"}
+    assert {fn.__rebuno_tool_id__ for fn in a} == {"github.create_pr", "github.issue_read"}
+    assert {fn.__rebuno_tool_id__ for fn in b} == {"compute.heavy"}
 
 
 async def test_connect_all_failure_doesnt_abort_others():

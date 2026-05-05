@@ -28,7 +28,7 @@ import asyncio
 import inspect
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from rebuno.errors import PolicyError, RebunoError, ToolError
@@ -46,19 +46,27 @@ class Tools:
     Lazy: schemas are fetched at agent startup (or on first ``.tools`` access
     if used outside an agent). Each call submits a remote intent through the
     kernel.
+
+    The handle is iterable (yields all callables) and indexable by short name
+    (everything after the final ``.``)::
+
+        github_tools = remote.Tools("github")
+        # ... after connect ...
+        graph = create_agent(llm, [*github_tools])              # all tools
+        graph = create_agent(llm, [github_tools["create_pr"]])  # cherry-pick one
     """
 
     def __init__(self, prefix: str):
         if not prefix:
             raise ValueError("Tools requires a non-empty prefix")
         self.prefix = prefix
-        self._tools: list[Callable[..., Any]] | None = None
+        self._tools: dict[str, Callable[..., Any]] | None = None
         self._connected = False
         self._lock = asyncio.Lock()
         _REGISTRY.append(self)
 
     @property
-    def tools(self) -> list[Callable[..., Any]]:
+    def tools(self) -> dict[str, Callable[..., Any]]:
         if self._tools is None:
             raise RuntimeError(
                 f"remote.Tools(prefix='{self.prefix}') has not been connected. "
@@ -66,6 +74,25 @@ class Tools:
                 "auto-connects all registered remote.Tools at startup)."
             )
         return self._tools
+
+    def __iter__(self) -> Iterator[Callable[..., Any]]:
+        return iter(self.tools.values())
+
+    def __getitem__(self, name: str) -> Callable[..., Any]:
+        try:
+            return self.tools[name]
+        except KeyError:
+            available = ", ".join(sorted(self.tools)) or "(none)"
+            raise KeyError(
+                f"remote.Tools(prefix='{self.prefix}') has no tool '{name}'. "
+                f"Available: {available}"
+            ) from None
+
+    def __len__(self) -> int:
+        return len(self.tools)
+
+    def __contains__(self, name: object) -> bool:
+        return isinstance(name, str) and name in self.tools
 
     async def connect(self, client: Any) -> None:
         """Fetch schemas from the kernel and build wrapped callables.
@@ -77,7 +104,11 @@ class Tools:
             if self._connected:
                 return
             schemas = await client.list_tools(prefix=self.prefix)
-            self._tools = [self._wrap(s) for s in schemas]
+            wrapped = {}
+            for s in schemas:
+                fn = self._wrap(s)
+                wrapped[fn.__name__] = fn
+            self._tools = wrapped
             self._connected = True
             logger.info(
                 "remote tools resolved: prefix=%s count=%d",
