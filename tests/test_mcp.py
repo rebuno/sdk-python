@@ -85,7 +85,7 @@ def test_wrap_tool_builds_signature_from_input_schema():
 
     assert fn.__name__ == "issue_read"
     assert fn.__doc__ == "Read an issue."
-    assert fn.__rebuno_tool_id__ == "github.issue_read"
+    assert fn.__rebuno_tool_id__ == "github_issue_read"
     assert fn.__rebuno_mcp__ is True
 
     sig = inspect.signature(fn)

@@ -137,7 +137,7 @@ class MCPServer:
 
     def _wrap_tool(self, raw: Any) -> Callable[..., Any]:
         tool_name = raw.name
-        tool_id = f"{self.prefix}.{tool_name}"
+        tool_id = f"{self.prefix}_{tool_name}"
         description = getattr(raw, "description", "") or ""
         schema = getattr(raw, "inputSchema", None) or {}
         props = schema.get("properties", {}) if isinstance(schema, dict) else {}
