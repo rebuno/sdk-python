@@ -21,22 +21,37 @@ _REGISTRY: dict[str, ToolEntry] = {}
 
 
 def tool(
-    tool_id: str,
+    tool_id: str | Callable[..., Any] | None = None,
     *,
     remote: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a function as a Rebuno tool.
 
     Args:
-        tool_id: Stable identifier used by policies and the kernel.
+        tool_id: Stable identifier used by policies and the kernel. If omitted,
+            defaults to the function's ``__name__``.
         remote: If True, the body is treated as a stub. The kernel dispatches
             to a runner; the wrapper awaits the result via SSE.
+
+    Usable as ``@tool``, ``@tool()``, ``@tool("custom_id")``, or
+    ``@tool(remote=True)``.
     """
 
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        wrapper = _build_wrapper(tool_id, fn, remote)
-        _REGISTRY[tool_id] = ToolEntry(tool_id=tool_id, fn=fn, wrapper=wrapper, remote=remote)
+    def decorate(fn: Callable[..., Any], explicit_id: str | None) -> Callable[..., Any]:
+        resolved_id = explicit_id if explicit_id is not None else fn.__name__
+        wrapper = _build_wrapper(resolved_id, fn, remote)
+        _REGISTRY[resolved_id] = ToolEntry(
+            tool_id=resolved_id, fn=fn, wrapper=wrapper, remote=remote
+        )
         return wrapper
+
+    if callable(tool_id):
+        return decorate(tool_id, None)
+
+    explicit_id = tool_id
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        return decorate(fn, explicit_id)
 
     return decorator
 
