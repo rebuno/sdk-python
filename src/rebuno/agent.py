@@ -13,7 +13,7 @@ from rebuno._internal.correlation import CorrelationMap
 from rebuno._internal.inputs import InputBinder
 from rebuno._internal.sse import SSEEvent
 from rebuno.client import Client
-from rebuno.errors import PolicyError, ToolError, UnauthorizedError
+from rebuno.errors import ClientClosedError, PolicyError, ToolError, UnauthorizedError
 from rebuno.execution import ExecutionState, _reset_current, _set_current
 from rebuno.mcp import connect_all as connect_all_mcp
 from rebuno.mcp import disconnect_all as disconnect_all_mcp
@@ -67,6 +67,8 @@ class Agent:
         self._shutdown = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
         self._exec_correlation: dict[str, CorrelationMap] = {}
+        self._exec_tasks: set[asyncio.Task[None]] = set()
+        self._shutdown_drain_timeout: float = 5.0
 
     def run(self, handler: Callable[..., Any]) -> None:
         """Block on the agent loop. Convenience wrapper over ``asyncio.run``."""
@@ -126,10 +128,36 @@ class Agent:
                     except TimeoutError:
                         pass
         finally:
+            await self._drain_exec_tasks()
             await disconnect_all_mcp()
             await disconnect_all_remote()
             await self._client.close()
             self._logger.info("Agent stopped")
+
+    async def _drain_exec_tasks(self) -> None:
+        """Wait for in-flight execution tasks to finish before closing the client.
+
+        Gives them a brief grace period to complete their terminal intent, then
+        cancels any stragglers and awaits cancellation. Without this, the
+        client closes underneath running tasks and they crash trying to submit
+        their final intent.
+        """
+        if not self._exec_tasks:
+            return
+        pending = list(self._exec_tasks)
+        self._logger.info("Draining %d in-flight execution task(s)", len(pending))
+        done, still_pending = await asyncio.wait(
+            pending, timeout=self._shutdown_drain_timeout
+        )
+        if still_pending:
+            self._logger.warning(
+                "Cancelling %d execution task(s) that did not finish within %.1fs",
+                len(still_pending),
+                self._shutdown_drain_timeout,
+            )
+            for t in still_pending:
+                t.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
 
     def _handle_shutdown(self) -> None:
         self._logger.info("Shutdown signal received")
@@ -150,6 +178,8 @@ class Agent:
             data = json.loads(sse.data)
             claim = ClaimResult(**data)
             task = asyncio.create_task(self._handle_execution(claim))
+            self._exec_tasks.add(task)
+            task.add_done_callback(self._exec_tasks.discard)
             task.add_done_callback(self._log_task_exception)
             return
 
@@ -208,6 +238,12 @@ class Agent:
                     output=output,
                 )
                 self._logger.info("Execution completed: execution_id=%s", eid)
+            except ClientClosedError:
+                self._logger.info(
+                    "Client closed before completion intent could be submitted; "
+                    "agent is shutting down: execution_id=%s",
+                    eid,
+                )
             except UnauthorizedError as e:
                 if _is_session_gone(e):
                     self._logger.warning(
@@ -228,6 +264,13 @@ class Agent:
                 session_id=session_id,
                 intent_type="fail",
                 error=error,
+            )
+        except ClientClosedError:
+            self._logger.info(
+                "Client closed before fail intent could be submitted; "
+                "agent is shutting down: execution_id=%s original_error=%s",
+                execution_id,
+                error,
             )
         except UnauthorizedError as e:
             if _is_session_gone(e):

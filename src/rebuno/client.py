@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from rebuno._internal import SSEEvent, api_error, async_parse_sse
-from rebuno.errors import APIError, NetworkError, PolicyError, RebunoError
+from rebuno.errors import APIError, ClientClosedError, NetworkError, PolicyError, RebunoError
 from rebuno.types import (
     Event,
     Execution,
@@ -421,9 +421,17 @@ class Client:
         params: dict[str, Any] | None = None,
         idempotent: bool = False,
     ) -> httpx.Response:
+        if self._http.is_closed:
+            raise ClientClosedError(
+                f"Cannot send {method} {path}: client is closed"
+            )
         retryable = method == "GET" or idempotent
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            if self._http.is_closed:
+                raise ClientClosedError(
+                    f"Cannot send {method} {path}: client was closed mid-request"
+                )
             try:
                 resp = await self._http.request(method, path, json=json, params=params)
                 if resp.status_code == 429:

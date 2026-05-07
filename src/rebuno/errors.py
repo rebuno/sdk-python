@@ -18,6 +18,18 @@ class NetworkError(RebunoError):
         return f"NetworkError({str(self)!r})"
 
 
+class ClientClosedError(RebunoError):
+    """Raised when a request is attempted on a Client whose HTTP transport has been closed.
+
+    Typically indicates that the agent is shutting down and a late in-flight
+    task tried to use the client after ``Client.close()`` ran. Callers running
+    during shutdown should treat this as a clean termination, not an error.
+    """
+
+    def __repr__(self) -> str:
+        return f"ClientClosedError({str(self)!r})"
+
+
 class APIError(RebunoError):
     """Raised when the API returns an error response."""
 
