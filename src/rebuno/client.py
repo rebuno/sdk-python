@@ -154,7 +154,7 @@ class Client:
         execution it replays the backlog and exits at the terminal event.
 
         For a finite snapshot of an event log (no streaming), use
-        :meth:`get_events` instead.
+        :meth:`events_snapshot` instead.
         """
         params: dict[str, Any] = {}
         if after_sequence:
@@ -164,6 +164,31 @@ class Client:
             yield event
             if event.type in _TERMINAL_EVENT_TYPES:
                 return
+
+    async def events_snapshot(
+        self,
+        execution_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[Event]:
+        """Fetch a finite snapshot of an execution's event log.
+
+        Unlike :meth:`events`, this returns immediately with whatever events
+        are currently persisted — it does not stream or wait for the
+        execution to terminate. Use this when you want the current event log
+        of a possibly-still-running execution without blocking.
+
+        ``limit`` is capped server-side at 1000.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if after_sequence:
+            params["after_sequence"] = after_sequence
+        resp = await self._request(
+            "GET", f"/v0/executions/{execution_id}/events", params=params
+        )
+        body = resp.json()
+        return [Event(**e) for e in body.get("events", [])]
 
     async def run(
         self,

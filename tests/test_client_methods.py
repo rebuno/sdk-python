@@ -150,6 +150,52 @@ async def test_report_step_result_success():
     }
 
 
+async def test_events_snapshot_returns_snapshot_without_streaming():
+    captured: dict = {}
+
+    def h(request: httpx.Request) -> httpx.Response:
+        captured["query"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={
+                "events": [
+                    {
+                        "id": "ev-1",
+                        "execution_id": "exec-1",
+                        "type": "execution.started",
+                        "sequence": 1,
+                    },
+                    {
+                        "id": "ev-2",
+                        "execution_id": "exec-1",
+                        "type": "step.created",
+                        "sequence": 2,
+                    },
+                ],
+                "latest_sequence": 2,
+            },
+        )
+
+    client = mock_client({("GET", "/v0/executions/exec-1/events"): h})
+    events = await client.events_snapshot("exec-1", after_sequence=0, limit=500)
+
+    assert [e.sequence for e in events] == [1, 2]
+    assert [e.type for e in events] == ["execution.started", "step.created"]
+    assert captured["query"] == {"limit": "500"}
+
+
+async def test_events_snapshot_passes_after_sequence_when_set():
+    captured: dict = {}
+
+    def h(request: httpx.Request) -> httpx.Response:
+        captured["query"] = dict(request.url.params)
+        return httpx.Response(200, json={"events": [], "latest_sequence": 0})
+
+    client = mock_client({("GET", "/v0/executions/exec-1/events"): h})
+    await client.events_snapshot("exec-1", after_sequence=5)
+    assert captured["query"] == {"limit": "100", "after_sequence": "5"}
+
+
 async def test_run_until_complete_invokes_callback_then_returns_final():
     """run_until_complete: stream events through SSE, call on_event for each,
     fetch final execution. Uses a fake events() iterator since SSE-stream
