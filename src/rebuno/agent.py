@@ -13,7 +13,7 @@ from rebuno._internal.correlation import CorrelationMap
 from rebuno._internal.inputs import InputBinder
 from rebuno._internal.sse import SSEEvent
 from rebuno.client import Client
-from rebuno.errors import PolicyError, ToolError
+from rebuno.errors import PolicyError, ToolError, UnauthorizedError
 from rebuno.execution import ExecutionState, _reset_current, _set_current
 from rebuno.mcp import connect_all as connect_all_mcp
 from rebuno.mcp import disconnect_all as disconnect_all_mcp
@@ -189,13 +189,22 @@ class Agent:
                 await self._fail(eid, claim.session_id, str(e))
                 return
 
-            await self._client.submit_intent(
-                execution_id=eid,
-                session_id=claim.session_id,
-                intent_type="complete",
-                output=output,
-            )
-            logger.info("Execution completed: execution_id=%s", eid)
+            try:
+                await self._client.submit_intent(
+                    execution_id=eid,
+                    session_id=claim.session_id,
+                    intent_type="complete",
+                    output=output,
+                )
+                logger.info("Execution completed: execution_id=%s", eid)
+            except UnauthorizedError as e:
+                if _is_session_gone(e):
+                    logger.warning(
+                        "Session expired before completion; kernel will reassign: execution_id=%s",
+                        eid,
+                    )
+                else:
+                    raise
         finally:
             _reset_current(token)
             correlation.cancel_all()
@@ -209,8 +218,23 @@ class Agent:
                 intent_type="fail",
                 error=error,
             )
+        except UnauthorizedError as e:
+            if _is_session_gone(e):
+                logger.warning(
+                    "Session expired before fail intent could be submitted: "
+                    "execution_id=%s original_error=%s",
+                    execution_id,
+                    error,
+                )
+            else:
+                logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
         except Exception:
             logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
+
+
+def _is_session_gone(e: UnauthorizedError) -> bool:
+    msg = str(e).lower()
+    return "session expired" in msg or "session not found" in msg
 
 
 def _log_task_exception(task: asyncio.Task[Any]) -> None:
