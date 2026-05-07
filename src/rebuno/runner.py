@@ -210,6 +210,7 @@ class Runner:
         try:
             await self._client.submit_job_result(
                 runner_id=self.runner_id,
+                consumer_id=self.consumer_id,
                 job_id=job.id,
                 execution_id=job.execution_id,
                 step_id=job.step_id,
@@ -242,6 +243,7 @@ class Runner:
         try:
             await self._client.submit_job_result(
                 runner_id=self.runner_id,
+                consumer_id=self.consumer_id,
                 job_id=job.id,
                 execution_id=job.execution_id,
                 step_id=job.step_id,

@@ -266,6 +266,7 @@ class Client:
         step_id: str,
         success: bool,
         *,
+        consumer_id: str = "",
         data: Any = None,
         error: str = "",
         retryable: bool = False,
@@ -278,6 +279,8 @@ class Client:
             "step_id": step_id,
             "success": success,
         }
+        if consumer_id:
+            body["consumer_id"] = consumer_id
         if data is not None:
             body["data"] = data
         if error:
