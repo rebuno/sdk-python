@@ -10,7 +10,7 @@ from typing import Any
 from rebuno._internal import install_shutdown_handlers, jittered_backoff
 from rebuno._internal.schema import fn_to_json_schema
 from rebuno.client import Client
-from rebuno.mcp import MCPServer
+from rebuno.mcp import MCPServer, _flatten_mcp_result
 from rebuno.tool import all_tools, get_tool
 from rebuno.types import Job
 
@@ -225,7 +225,9 @@ class Runner:
             for fn in server._tools or []:
                 if getattr(fn, "__rebuno_tool_id__", None) == tool_id:
                     kwargs = arguments if isinstance(arguments, dict) else {}
-                    return await fn(**kwargs)
+                    args = {k: v for k, v in kwargs.items() if v is not None}
+                    raw = await server._client.call_tool(fn.__name__, args)
+                    return _flatten_mcp_result(raw)
 
         entry = get_tool(tool_id)
         if entry is None:
