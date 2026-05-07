@@ -24,6 +24,12 @@ from rebuno.types import ClaimResult
 logger = logging.getLogger("rebuno.agent")
 
 
+def _agent_logger(agent_id: str) -> logging.Logger:
+    # Dots in agent_id would create unintended logger hierarchy levels.
+    safe = agent_id.replace(".", "-")
+    return logger.getChild(safe)
+
+
 class Agent:
     """A long-lived consumer of executions for a single agent_id.
 
@@ -50,6 +56,7 @@ class Agent:
             raise ValueError("agent_id must not be empty")
         self.agent_id = agent_id
         self.consumer_id = consumer_id or f"{agent_id}-{uuid.uuid4().hex[:8]}"
+        self._logger = _agent_logger(agent_id)
         self.reconnect_delay = reconnect_delay
         self.max_reconnect_delay = max_reconnect_delay
 
@@ -74,7 +81,7 @@ class Agent:
 
         install_shutdown_handlers(self._handle_shutdown)
 
-        logger.info(
+        self._logger.info(
             "Agent started: agent_id=%s consumer_id=%s",
             self.agent_id,
             self.consumer_id,
@@ -84,11 +91,11 @@ class Agent:
         try:
             await connect_all_mcp()
         except Exception:
-            logger.exception("MCP startup error")
+            self._logger.exception("MCP startup error")
         try:
             await connect_all_remote(self._client)
         except Exception:
-            logger.exception("Remote tools startup error")
+            self._logger.exception("Remote tools startup error")
 
         consecutive_failures = 0
         try:
@@ -99,9 +106,13 @@ class Agent:
                     consecutive_failures = 0
                 except asyncio.CancelledError:
                     break
-                except Exception:
+                except Exception as e:
                     consecutive_failures += 1
-                    logger.exception("SSE connection error, reconnecting")
+                    self._logger.warning(
+                        "SSE connection dropped, reconnecting: %s: %s",
+                        type(e).__name__,
+                        e,
+                    )
                     if not self._running:
                         break
                     delay = jittered_backoff(
@@ -118,17 +129,17 @@ class Agent:
             await disconnect_all_mcp()
             await disconnect_all_remote()
             await self._client.close()
-            logger.info("Agent stopped")
+            self._logger.info("Agent stopped")
 
     def _handle_shutdown(self) -> None:
-        logger.info("Shutdown signal received")
+        self._logger.info("Shutdown signal received")
         self._running = False
         self._shutdown.set()
         if self._connect_task and not self._connect_task.done():
             self._connect_task.cancel()
 
     async def _stream_loop(self) -> None:
-        logger.info("SSE connection established")
+        self._logger.info("SSE connection established")
         async for sse in self._client.agent_stream(self.agent_id, self.consumer_id):
             if not self._running:
                 return
@@ -139,7 +150,7 @@ class Agent:
             data = json.loads(sse.data)
             claim = ClaimResult(**data)
             task = asyncio.create_task(self._handle_execution(claim))
-            task.add_done_callback(_log_task_exception)
+            task.add_done_callback(self._log_task_exception)
             return
 
         data = json.loads(sse.data)
@@ -157,7 +168,7 @@ class Agent:
 
     async def _handle_execution(self, claim: ClaimResult) -> None:
         eid = claim.execution_id
-        logger.info(
+        self._logger.info(
             "Execution assigned: execution_id=%s session_id=%s",
             eid,
             claim.session_id,
@@ -181,11 +192,11 @@ class Agent:
                 if inspect.isawaitable(output):
                     output = await output
             except (PolicyError, ToolError) as e:
-                logger.warning("Execution failed: execution_id=%s error=%s", eid, e)
+                self._logger.warning("Execution failed: execution_id=%s error=%s", eid, e)
                 await self._fail(eid, claim.session_id, str(e))
                 return
             except Exception as e:
-                logger.exception("Process error: execution_id=%s", eid)
+                self._logger.exception("Process error: execution_id=%s", eid)
                 await self._fail(eid, claim.session_id, str(e))
                 return
 
@@ -196,10 +207,10 @@ class Agent:
                     intent_type="complete",
                     output=output,
                 )
-                logger.info("Execution completed: execution_id=%s", eid)
+                self._logger.info("Execution completed: execution_id=%s", eid)
             except UnauthorizedError as e:
                 if _is_session_gone(e):
-                    logger.warning(
+                    self._logger.warning(
                         "Session expired before completion; kernel will reassign: execution_id=%s",
                         eid,
                     )
@@ -220,26 +231,25 @@ class Agent:
             )
         except UnauthorizedError as e:
             if _is_session_gone(e):
-                logger.warning(
+                self._logger.warning(
                     "Session expired before fail intent could be submitted: "
                     "execution_id=%s original_error=%s",
                     execution_id,
                     error,
                 )
             else:
-                logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
+                self._logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
         except Exception:
-            logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
+            self._logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
+
+    def _log_task_exception(self, task: asyncio.Task[Any]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._logger.error("Unhandled exception in execution task: %s", exc, exc_info=exc)
 
 
 def _is_session_gone(e: UnauthorizedError) -> bool:
     msg = str(e).lower()
     return "session expired" in msg or "session not found" in msg
-
-
-def _log_task_exception(task: asyncio.Task[Any]) -> None:
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Unhandled exception in execution task: %s", exc, exc_info=exc)
