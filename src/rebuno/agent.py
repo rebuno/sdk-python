@@ -19,6 +19,7 @@ from rebuno.mcp import connect_all as connect_all_mcp
 from rebuno.mcp import disconnect_all as disconnect_all_mcp
 from rebuno.remote import connect_all as connect_all_remote
 from rebuno.remote import disconnect_all as disconnect_all_remote
+from rebuno.remote import refresh_all as refresh_all_remote
 from rebuno.types import ClaimResult
 
 logger = logging.getLogger("rebuno.agent")
@@ -210,6 +211,8 @@ class Agent:
 
         token = _set_current(state)
         try:
+            await refresh_all_remote(self._client)
+
             assert self._binder is not None
             try:
                 kwargs = self._binder.bind(claim.input)

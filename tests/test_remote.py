@@ -181,6 +181,67 @@ async def test_connect_all_resolves_every_registered_handle():
     assert {fn.__rebuno_tool_id__ for fn in b} == {"compute.heavy"}
 
 
+async def test_refresh_picks_up_newly_registered_tools():
+    handle = remote.Tools("github")
+    client = _StubClient([SAMPLE_SCHEMAS[0]])  # only create_pr at first
+    await handle.connect(client)
+    assert set(handle.tools) == {"create_pr"}
+
+    # Simulate a runner registering issue_read after agent startup.
+    client.schemas = SAMPLE_SCHEMAS
+    await handle.refresh(client)
+    assert set(handle.tools) == {"create_pr", "issue_read"}
+
+
+async def test_refresh_mutates_tools_dict_in_place():
+    handle = remote.Tools("github")
+    client = _StubClient([SAMPLE_SCHEMAS[0]])
+    await handle.connect(client)
+
+    captured = handle.tools  # caller-side reference
+    client.schemas = SAMPLE_SCHEMAS
+    await handle.refresh(client)
+
+    assert captured is handle.tools
+    assert set(captured) == {"create_pr", "issue_read"}
+
+
+async def test_refresh_drops_tools_no_longer_advertised():
+    handle = remote.Tools("github")
+    client = _StubClient(SAMPLE_SCHEMAS)
+    await handle.connect(client)
+    assert set(handle.tools) == {"create_pr", "issue_read"}
+
+    client.schemas = [SAMPLE_SCHEMAS[0]]  # issue_read's runner disconnected
+    await handle.refresh(client)
+    assert set(handle.tools) == {"create_pr"}
+
+
+async def test_refresh_works_when_initial_connect_returned_empty():
+    handle = remote.Tools("github")
+    client = _StubClient([])
+    await handle.connect(client)
+    assert handle.tools == {}
+
+    client.schemas = SAMPLE_SCHEMAS
+    await handle.refresh(client)
+    assert set(handle.tools) == {"create_pr", "issue_read"}
+
+
+async def test_refresh_all_failure_keeps_previous_tools():
+    handle = remote.Tools("github")
+    client = _StubClient(SAMPLE_SCHEMAS)
+    await handle.connect(client)
+    snapshot = dict(handle.tools)
+
+    class _BrokenClient(_StubClient):
+        async def list_tools(self, prefix: str = ""):
+            raise RuntimeError("network down")
+
+    await remote.refresh_all(_BrokenClient([]))
+    assert dict(handle.tools) == snapshot
+
+
 async def test_connect_all_failure_doesnt_abort_others():
     class _PartlyFailingClient(_StubClient):
         async def list_tools(self, prefix: str = ""):

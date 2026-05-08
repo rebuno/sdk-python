@@ -116,6 +116,31 @@ class Tools:
                 len(self._tools),
             )
 
+    async def refresh(self, client: Any) -> None:
+        """Re-fetch schemas and update tools in place.
+
+        Mutates the existing ``_tools`` dict so any code holding a reference
+        (e.g. ``my_tools = github.tools``) sees the new entries without needing
+        to re-bind.
+        """
+        async with self._lock:
+            schemas = await client.list_tools(prefix=self.prefix)
+            wrapped: dict[str, Callable[..., Any]] = {}
+            for s in schemas:
+                fn = self._wrap(s)
+                wrapped[fn.__name__] = fn
+            if self._tools is None:
+                self._tools = wrapped
+            else:
+                self._tools.clear()
+                self._tools.update(wrapped)
+            self._connected = True
+            logger.debug(
+                "remote tools refreshed: prefix=%s count=%d",
+                self.prefix,
+                len(self._tools),
+            )
+
     async def disconnect(self) -> None:
         self._connected = False
         self._tools = None
@@ -207,6 +232,24 @@ async def connect_all(client: Any) -> None:
         except Exception:
             logger.warning(
                 "remote.Tools(prefix=%s) failed to resolve from kernel; will be empty",
+                handle.prefix,
+                exc_info=True,
+            )
+
+
+async def refresh_all(client: Any) -> None:
+    """Refresh every registered remote.Tools handle.
+
+    Used by Agent before each execution so handlers see tools from runners
+    that connected after agent startup. Failures are logged and suppressed;
+    the previous tool set is retained on error.
+    """
+    for handle in _REGISTRY:
+        try:
+            await handle.refresh(client)
+        except Exception:
+            logger.warning(
+                "remote.Tools(prefix=%s) refresh failed; keeping previous tools",
                 handle.prefix,
                 exc_info=True,
             )
