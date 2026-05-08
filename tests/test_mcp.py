@@ -58,6 +58,41 @@ def test_resolve_headers_none_returns_empty():
     assert s._resolve_headers() == {}
 
 
+def test_callable_headers_resolved_per_request_via_auth_hook():
+    import httpx
+
+    calls = {"n": 0}
+
+    def headers():
+        calls["n"] += 1
+        return {"Authorization": f"Bearer t{calls['n']}"}
+
+    s = MCPServer("svc", url="https://example/mcp", headers=headers)
+    client = s._build_client()
+    auth = client.transport.auth
+    assert auth is not None
+
+    def run_flow():
+        req = httpx.Request("GET", "https://example/mcp")
+        flow = auth.auth_flow(req)
+        sent = next(flow)
+        try:
+            next(flow)
+        except StopIteration:
+            pass
+        return sent.headers["Authorization"]
+
+    assert run_flow() == "Bearer t1"
+    assert run_flow() == "Bearer t2"
+
+
+def test_static_headers_passed_to_transport_as_dict():
+    s = MCPServer("svc", url="https://example/mcp", headers={"X-Token": "static"})
+    client = s._build_client()
+    assert client.transport.headers == {"X-Token": "static"}
+    assert client.transport.auth is None
+
+
 class _FakeRawTool:
     """Mimics fastmcp's tool object surface."""
 

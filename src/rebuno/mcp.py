@@ -11,6 +11,7 @@ from rebuno.errors import PolicyError, RebunoError, ToolError
 from rebuno.execution import _get_current
 
 try:
+    import httpx
     from fastmcp import Client as _FastMCPClient
     from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
 
@@ -19,7 +20,27 @@ except ImportError:
     _FastMCPClient = None  # type: ignore[assignment,misc]
     StdioTransport = None  # type: ignore[assignment,misc]
     StreamableHttpTransport = None  # type: ignore[assignment,misc]
+    httpx = None  # type: ignore[assignment]
     _HAS_FASTMCP = False
+
+
+if _HAS_FASTMCP:
+
+    class _CallableHeadersAuth(httpx.Auth):
+        """Resolves a headers callable on every outbound request.
+
+        Lets ``MCPServer(headers=fn)`` pick up rotated tokens without
+        reconnecting.
+        """
+
+        def __init__(self, fn: Callable[[], dict[str, str]]):
+            self._fn = fn
+
+        def auth_flow(self, request):  # type: ignore[no-untyped-def]
+            request.headers.update(self._fn())
+            yield request
+else:
+    _CallableHeadersAuth = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("rebuno.mcp")
 
@@ -122,10 +143,17 @@ class MCPServer:
 
     def _build_client(self) -> Any:
         if self.url:
-            # Resolve headers at connect time so each (re)connect picks up
-            # fresh values from a callable headers source.
-            resolved = self._resolve_headers() if self.headers else None
-            transport: Any = StreamableHttpTransport(url=self.url, headers=resolved) if resolved else self.url
+            # Callable headers are resolved per-request via an httpx auth hook,
+            # so rotated tokens are picked up without reconnecting. Static dict
+            # headers are passed through as-is.
+            if callable(self.headers):
+                transport: Any = StreamableHttpTransport(
+                    url=self.url, auth=_CallableHeadersAuth(self.headers)
+                )
+            elif self.headers:
+                transport = StreamableHttpTransport(url=self.url, headers=self.headers)
+            else:
+                transport = self.url
             return _FastMCPClient(transport)
         transport = StdioTransport(command=self.command, args=self.args, env=self.env)
         return _FastMCPClient(transport)
