@@ -93,7 +93,7 @@ class Runner:
                     break
                 except Exception:
                     consecutive_failures += 1
-                    logger.exception("SSE connection error, reconnecting")
+                    logger.warning("SSE connection error, reconnecting")
                     if not self._running:
                         break
                     delay = jittered_backoff(
