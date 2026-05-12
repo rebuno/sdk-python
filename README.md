@@ -42,7 +42,7 @@ The handler signature is the input schema — `process(prompt: str)` makes `prom
 ```python
 from rebuno import tool
 
-@tool("web.search")
+@tool("web_search")
 async def search(query: str, limit: int = 10) -> list[str]:
     return [...]
 ```
@@ -58,7 +58,7 @@ graph = create_agent(llm, [search, ...])
 ```python
 from rebuno import Runner, tool
 
-@tool("compute.heavy")
+@tool("compute_heavy")
 async def heavy(data: str) -> str:
     return process(data)
 
