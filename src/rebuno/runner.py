@@ -155,7 +155,7 @@ class Runner:
                     {
                         "id": tool_id,
                         "description": (fn.__doc__ or "").strip(),
-                        "input_schema": getattr(fn, "__rebuno_input_schema__", {}) or {},
+                        "input_schema": getattr(fn, "__input_schema__", {}) or {},
                     }
                 )
 
