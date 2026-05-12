@@ -176,6 +176,7 @@ class Tools:
         wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
         wrapper.__rebuno_tool_id__ = tool_id  # type: ignore[attr-defined]
         wrapper.__rebuno_remote__ = True  # type: ignore[attr-defined]
+        wrapper.__input_schema__ = input_schema  # type: ignore[attr-defined]
         return wrapper
 
 
