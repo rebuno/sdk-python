@@ -82,11 +82,6 @@ class Runner:
             capabilities,
         )
 
-        try:
-            await self._publish_schemas()
-        except Exception:
-            logger.exception("Failed to publish tool schemas to kernel")
-
         consecutive_failures = 0
         try:
             while self._running:
@@ -178,6 +173,12 @@ class Runner:
 
     async def _stream_loop(self, capabilities: list[str]) -> None:
         logger.info("Runner SSE connection established")
+
+        try:
+            await self._publish_schemas()
+        except Exception:
+            logger.exception("Failed to publish tool schemas to kernel")
+
         async for sse in self._client.runner_stream(
             self.runner_id,
             self.consumer_id,
