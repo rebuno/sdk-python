@@ -68,7 +68,7 @@ class Agent:
         self._shutdown = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
         self._exec_correlation: dict[str, CorrelationMap] = {}
-        self._exec_tasks: set[asyncio.Task[None]] = set()
+        self._exec_tasks: dict[str, asyncio.Task[None]] = {}
         self._shutdown_drain_timeout: float = 5.0
 
     def run(self, handler: Callable[..., Any]) -> None:
@@ -145,7 +145,7 @@ class Agent:
         """
         if not self._exec_tasks:
             return
-        pending = list(self._exec_tasks)
+        pending = list(self._exec_tasks.values())
         self._logger.info("Draining %d in-flight execution task(s)", len(pending))
         done, still_pending = await asyncio.wait(
             pending, timeout=self._shutdown_drain_timeout
@@ -178,14 +178,26 @@ class Agent:
         if sse.type == "execution.assigned":
             data = json.loads(sse.data)
             claim = ClaimResult(**data)
+            eid = claim.execution_id
             task = asyncio.create_task(self._handle_execution(claim))
-            self._exec_tasks.add(task)
-            task.add_done_callback(self._exec_tasks.discard)
+            self._exec_tasks[eid] = task
+            task.add_done_callback(lambda t, k=eid: self._exec_tasks.pop(k, None))
             task.add_done_callback(self._log_task_exception)
             return
 
         data = json.loads(sse.data)
         execution_id = data.get("execution_id", "")
+
+        if sse.type == "execution.cancelled":
+            task = self._exec_tasks.get(execution_id)
+            if task is not None:
+                self._logger.info(
+                    "Execution cancelled by kernel; cancelling handler task: execution_id=%s",
+                    execution_id,
+                )
+                task.cancel()
+            return
+
         correlation = self._exec_correlation.get(execution_id)
         if correlation is None:
             return
