@@ -193,7 +193,7 @@ class MCPServer:
         wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
         wrapper.__rebuno_tool_id__ = tool_id  # type: ignore[attr-defined]
         wrapper.__rebuno_mcp__ = True  # type: ignore[attr-defined]
-        wrapper.__rebuno_input_schema__ = schema  # type: ignore[attr-defined]
+        wrapper.__input_schema__ = schema  # type: ignore[attr-defined]
         return wrapper
 
 
