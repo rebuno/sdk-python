@@ -169,8 +169,7 @@ class Tools:
                 raise RuntimeError(f"remote tool '{tool_id}' called outside an active execution.")
             return await _invoke_remote(state, tool_id, kwargs)
 
-        # Pretty name: github.create_pr -> create_pr
-        wrapper.__name__ = tool_id.rsplit(".", 1)[-1]
+        wrapper.__name__ = tool_id
         wrapper.__qualname__ = wrapper.__name__
         wrapper.__doc__ = description
         wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
