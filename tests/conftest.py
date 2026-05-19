@@ -104,16 +104,6 @@ def make_job(**overrides: Any) -> Job:
 
 
 @pytest.fixture(autouse=True)
-def _clear_tool_registry():
-    """Each test starts with an empty @tool registry."""
-    from rebuno.tool import _clear_registry
-
-    _clear_registry()
-    yield
-    _clear_registry()
-
-
-@pytest.fixture(autouse=True)
 def _clear_mcp_registry():
     from rebuno.mcp import _clear_registry
 

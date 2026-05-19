@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import inspect
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Annotated, Any, Union, get_args, get_origin, get_type_hints
 
 from rebuno.execution import _get_current
@@ -56,17 +55,6 @@ def _build_input_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     return schema
 
 
-@dataclass
-class ToolEntry:
-    tool_id: str
-    fn: Callable[..., Any]
-    wrapper: Callable[..., Any]
-    remote: bool
-
-
-_REGISTRY: dict[str, ToolEntry] = {}
-
-
 def tool(
     tool_id: str | Callable[..., Any] | None = None,
     *,
@@ -86,11 +74,7 @@ def tool(
 
     def decorate(fn: Callable[..., Any], explicit_id: str | None) -> Callable[..., Any]:
         resolved_id = explicit_id if explicit_id is not None else fn.__name__
-        wrapper = _build_wrapper(resolved_id, fn, remote)
-        _REGISTRY[resolved_id] = ToolEntry(
-            tool_id=resolved_id, fn=fn, wrapper=wrapper, remote=remote
-        )
-        return wrapper
+        return _build_wrapper(resolved_id, fn, remote)
 
     if callable(tool_id):
         return decorate(tool_id, None)
@@ -130,17 +114,3 @@ def _build_wrapper(
     wrapper.__rebuno_remote__ = remote  # type: ignore[attr-defined]
     wrapper.__input_schema__ = _build_input_schema(fn)  # type: ignore[attr-defined]
     return wrapper
-
-
-def all_tools() -> list[ToolEntry]:
-    """Snapshot of all registered tools. Used by Agent and Runner at startup."""
-    return list(_REGISTRY.values())
-
-
-def get_tool(tool_id: str) -> ToolEntry | None:
-    return _REGISTRY.get(tool_id)
-
-
-def _clear_registry() -> None:
-    """Test helper. Do not use in production."""
-    _REGISTRY.clear()

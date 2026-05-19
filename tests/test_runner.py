@@ -1,4 +1,4 @@
-"""Runner: capability collection and job dispatch into the @tool registry."""
+"""Runner: capability collection and job dispatch over explicitly-passed tools."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from conftest import make_job
 from rebuno import Runner, tool
 
 
-def _runner() -> Runner:
-    return Runner("r-1", kernel_url="http://test", api_key="")
+def _runner(*tools) -> Runner:
+    return Runner("r-1", kernel_url="http://test", api_key="", tools=list(tools))
 
 
-def test_runner_capabilities_default_to_registered_tools():
+def test_runner_capabilities_reflect_passed_tools():
     @tool("a.one")
     async def one() -> int:
         return 1
@@ -21,18 +21,13 @@ def test_runner_capabilities_default_to_registered_tools():
     async def two() -> int:
         return 2
 
+    r = _runner(one, two)
+    assert set(r._capabilities()) == {"a.one", "a.two"}
+
+
+def test_runner_with_no_tools_has_empty_capabilities():
     r = _runner()
-    caps = r._capabilities()
-    assert set(caps) == {"a.one", "a.two"}
-
-
-def test_runner_explicit_capabilities_override_registry():
-    @tool("a.skipped")
-    async def skipped():
-        return None
-
-    r = Runner("r-1", kernel_url="http://test", capabilities=["other.tool"])
-    assert r._capabilities() == ["other.tool"]
+    assert r._capabilities() == []
 
 
 def test_runner_capabilities_dedupe_preserves_order():
@@ -44,13 +39,21 @@ def test_runner_capabilities_dedupe_preserves_order():
     async def two():
         return None
 
-    r = _runner()
+    r = _runner(one, two)
     caps = r._capabilities()
     assert caps == ["a.one", "a.two"]
     assert len(set(caps)) == len(caps)
 
 
-async def test_dispatch_calls_registered_tool_function_directly():
+def test_runner_rejects_non_tool_callable():
+    async def plain():
+        return None
+
+    with pytest.raises(TypeError, match="not a @tool-decorated function"):
+        Runner("r-1", kernel_url="http://test", api_key="", tools=[plain])
+
+
+async def test_dispatch_calls_passed_tool_function_directly():
     """Runner._dispatch bypasses the @tool wrapper (which would gate via
     kernel intent) and calls the raw function. This is correct: the runner
     IS the kernel-side execution."""
@@ -61,7 +64,7 @@ async def test_dispatch_calls_registered_tool_function_directly():
         captured["value"] = value
         return value.upper()
 
-    r = _runner()
+    r = _runner(echo)
     result = await r._dispatch("compute.echo", {"value": "hi"})
     assert result == "HI"
     assert captured["value"] == "hi"
@@ -72,7 +75,7 @@ async def test_dispatch_supports_sync_tool_functions():
     def sync_op(x: int) -> int:
         return x * 2
 
-    r = _runner()
+    r = _runner(sync_op)
     assert await r._dispatch("compute.sync", {"x": 21}) == 42
 
 
@@ -87,7 +90,7 @@ async def test_dispatch_with_non_dict_arguments_passes_empty_kwargs():
     async def noargs() -> str:
         return "ok"
 
-    r = _runner()
+    r = _runner(noargs)
     assert await r._dispatch("compute.noargs", None) == "ok"
     assert await r._dispatch("compute.noargs", "scalar") == "ok"
 
@@ -107,7 +110,7 @@ async def test_handle_job_success_submits_data():
     async def add(a: int, b: int) -> int:
         return a + b
 
-    r = _runner()
+    r = _runner(add)
     spy = _SpyRunnerClient()
     r._client = spy  # type: ignore[assignment]
     job = make_job(tool_id="compute.add", arguments={"a": 2, "b": 3})
@@ -125,7 +128,7 @@ async def test_handle_job_failure_submits_error_with_retryable_flag():
     async def bad():
         raise ValueError("oops")
 
-    r = _runner()
+    r = _runner(bad)
     spy = _SpyRunnerClient()
     r._client = spy  # type: ignore[assignment]
 

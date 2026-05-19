@@ -1,4 +1,4 @@
-"""@tool decorator: registry, wrapper preserves metadata, execution gating."""
+"""@tool decorator: wrapper attributes, signature preservation, execution gating."""
 
 from __future__ import annotations
 
@@ -9,28 +9,31 @@ import pytest
 
 from rebuno import tool
 from rebuno.execution import _reset_current, _set_current
-from rebuno.tool import all_tools, get_tool
 
 
-def test_decorator_registers():
+def test_decorator_sets_tool_id():
     @tool("test.add")
     async def add(a: int, b: int) -> int:
         return a + b
 
-    entry = get_tool("test.add")
-    assert entry is not None
-    assert entry.tool_id == "test.add"
-    assert entry.remote is False
+    assert add.__rebuno_tool_id__ == "test.add"
+    assert add.__rebuno_remote__ is False
+
+
+def test_tool_id_defaults_to_function_name():
+    @tool
+    async def my_op() -> int:
+        return 1
+
+    assert my_op.__rebuno_tool_id__ == "my_op"
 
 
 def test_remote_flag_persisted():
     @tool("test.heavy", remote=True)
     async def heavy(x: int) -> int: ...
 
-    entry = get_tool("test.heavy")
-    assert entry is not None
-    assert entry.remote is True
     assert heavy.__rebuno_remote__ is True
+    assert heavy.__rebuno_tool_id__ == "test.heavy"
 
 
 def test_wrapper_preserves_name_and_signature():
@@ -44,7 +47,26 @@ def test_wrapper_preserves_name_and_signature():
     assert sig.parameters["count"].default == 1
     assert echo.__name__ == "echo"
     assert echo.__doc__ == "Echo a string back."
-    assert echo.__rebuno_tool_id__ == "test.echo"
+
+
+def test_wrapper_exposes_raw_function():
+    @tool("test.raw")
+    async def raw(x: int) -> int:
+        return x * 2
+
+    assert callable(raw.__wrapped__)
+    assert raw.__wrapped__.__name__ == "raw"
+
+
+def test_input_schema_built_from_annotations():
+    @tool("test.schema")
+    async def fn(name: str, count: int = 1) -> None: ...
+
+    schema = fn.__input_schema__
+    assert schema["type"] == "object"
+    assert schema["properties"]["name"] == {"type": "string"}
+    assert schema["properties"]["count"] == {"type": "integer"}
+    assert schema["required"] == ["name"]
 
 
 def test_calling_tool_outside_execution_raises():
@@ -57,17 +79,6 @@ def test_calling_tool_outside_execution_raises():
             await nope()
 
     asyncio.run(go())
-
-
-def test_all_tools_returns_registered_entries():
-    @tool("a.one")
-    async def one(): ...
-
-    @tool("a.two")
-    async def two(): ...
-
-    ids = {e.tool_id for e in all_tools()}
-    assert ids == {"a.one", "a.two"}
 
 
 async def test_local_tool_calls_invoke_through_state(monkeypatch):
@@ -89,7 +100,6 @@ async def test_local_tool_calls_invoke_through_state(monkeypatch):
             captured["tool_id"] = tool_id
             captured["arguments"] = arguments
             captured["local_runner"] = local_runner
-            # simulate kernel allow + local execution
             return await local_runner(**arguments)
 
     token = _set_current(_MockState())  # type: ignore[arg-type]
@@ -101,7 +111,7 @@ async def test_local_tool_calls_invoke_through_state(monkeypatch):
     assert result == 5
     assert captured["tool_id"] == "test.add"
     assert captured["arguments"] == {"a": 2, "b": 3}
-    assert captured["local_runner"] is add.__wrapped__  # functools.wraps target
+    assert captured["local_runner"] is add.__wrapped__
 
 
 async def test_remote_tool_dispatches_without_local_runner():

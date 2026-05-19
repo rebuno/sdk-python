@@ -4,14 +4,13 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from rebuno._internal import install_shutdown_handlers, jittered_backoff
 from rebuno._internal.schema import fn_to_json_schema
 from rebuno.client import Client
 from rebuno.mcp import MCPServer, _flatten_mcp_result
-from rebuno.tool import all_tools, get_tool
 from rebuno.types import Job
 
 logger = logging.getLogger("rebuno.runner")
@@ -24,8 +23,8 @@ class Runner:
         runner_id: Unique runner identifier.
         kernel_url: Override REBUNO_URL env var.
         api_key: Override REBUNO_API_KEY env var.
-        capabilities: Optional explicit list of tool IDs to advertise. If
-            empty, advertises every tool in the @tool registry.
+        tools: Functions decorated with ``@tool`` that this runner services.
+        mcp_servers: MCPServer instances whose tools this runner exposes.
         consumer_id: Unique consumer identifier (auto-generated if empty).
     """
 
@@ -35,7 +34,8 @@ class Runner:
         *,
         kernel_url: str | None = None,
         api_key: str | None = None,
-        capabilities: Iterable[str] | None = None,
+        tools: Iterable[Callable[..., Any]] | None = None,
+        mcp_servers: Iterable[MCPServer] | None = None,
         consumer_id: str = "",
         reconnect_delay: float = 2.0,
         max_reconnect_delay: float = 60.0,
@@ -48,17 +48,19 @@ class Runner:
         self.max_reconnect_delay = max_reconnect_delay
 
         self._client = Client(base_url=kernel_url, api_key=api_key)
-        self._explicit_caps: list[str] | None = list(capabilities) if capabilities else None
-        self._mcp_servers: list[MCPServer] = []
+        self._tools: dict[str, Callable[..., Any]] = {}
+        for fn in tools or ():
+            tool_id = getattr(fn, "__rebuno_tool_id__", None)
+            if not tool_id:
+                raise TypeError(
+                    f"{fn!r} is not a @tool-decorated function "
+                    "(missing __rebuno_tool_id__)"
+                )
+            self._tools[tool_id] = fn
+        self._mcp_servers: list[MCPServer] = list(mcp_servers or ())
         self._running = False
         self._shutdown = asyncio.Event()
         self._connect_task: asyncio.Task[None] | None = None
-
-    def host(self, server: MCPServer) -> None:
-        """Host an MCP server on this runner. Tools become advertised
-        capabilities and dispatched calls forward to the MCP transport.
-        """
-        self._mcp_servers.append(server)
 
     def run(self) -> None:
         asyncio.run(self.run_async())
@@ -113,9 +115,7 @@ class Runner:
             logger.info("Runner stopped")
 
     def _capabilities(self) -> list[str]:
-        if self._explicit_caps is not None:
-            return list(self._explicit_caps)
-        caps = [t.tool_id for t in all_tools()]
+        caps = list(self._tools.keys())
         for server in self._mcp_servers:
             for fn in server._tools or []:
                 tid = getattr(fn, "__rebuno_tool_id__", None)
@@ -128,15 +128,16 @@ class Runner:
         schemas: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        for entry in all_tools():
-            if entry.tool_id in seen:
+        for tool_id, wrapper in self._tools.items():
+            if tool_id in seen:
                 continue
-            seen.add(entry.tool_id)
+            seen.add(tool_id)
+            raw = getattr(wrapper, "__wrapped__", wrapper)
             schemas.append(
                 {
-                    "id": entry.tool_id,
-                    "description": (entry.fn.__doc__ or "").strip(),
-                    "input_schema": fn_to_json_schema(entry.fn),
+                    "id": tool_id,
+                    "description": (raw.__doc__ or "").strip(),
+                    "input_schema": fn_to_json_schema(raw),
                 }
             )
 
@@ -231,11 +232,12 @@ class Runner:
                     raw = await server._client.call_tool(fn.__name__, args)
                     return _flatten_mcp_result(raw)
 
-        entry = get_tool(tool_id)
-        if entry is None:
+        wrapper = self._tools.get(tool_id)
+        if wrapper is None:
             raise RuntimeError(f"No handler registered for tool '{tool_id}'")
+        raw_fn = getattr(wrapper, "__wrapped__", wrapper)
         kwargs = arguments if isinstance(arguments, dict) else {}
-        result = entry.fn(**kwargs)
+        result = raw_fn(**kwargs)
         if asyncio.iscoroutine(result):
             result = await result
         return result
