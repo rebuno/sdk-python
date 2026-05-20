@@ -12,7 +12,7 @@ from rebuno.types import IntentResult
 
 SAMPLE_SCHEMAS = [
     {
-        "id": "github.create_pr",
+        "id": "github_create_pr",
         "description": "Create a pull request.",
         "input_schema": {
             "type": "object",
@@ -27,7 +27,7 @@ SAMPLE_SCHEMAS = [
         "registered_at": "2026-05-01T12:00:00Z",
     },
     {
-        "id": "github.issue_read",
+        "id": "github_issue_read",
         "description": "Read an issue.",
         "input_schema": {"type": "object"},
         "runner_id": "runner-1",
@@ -77,11 +77,11 @@ async def test_connect_fetches_schemas_and_builds_callables():
 
     assert client.last_prefix == "github"
     assert len(handle.tools) == 2
-    assert set(handle.tools) == {"create_pr", "issue_read"}
+    assert set(handle.tools) == {"github_create_pr", "github_issue_read"}
     # Tools handle itself is iterable (yields callables) and indexable
-    assert {fn.__name__ for fn in handle} == {"create_pr", "issue_read"}
-    assert "create_pr" in handle
-    assert handle["create_pr"] is handle.tools["create_pr"]
+    assert {fn.__name__ for fn in handle} == {"github_create_pr", "github_issue_read"}
+    assert "github_create_pr" in handle
+    assert handle["github_create_pr"] is handle.tools["github_create_pr"]
 
 
 async def test_getitem_raises_for_unknown_tool():
@@ -95,14 +95,14 @@ async def test_wrapped_callable_has_synthesized_signature():
     handle = remote.Tools("github")
     await handle.connect(_StubClient(SAMPLE_SCHEMAS))
 
-    create_pr = handle["create_pr"]
+    create_pr = handle["github_create_pr"]
     sig = inspect.signature(create_pr)
     assert list(sig.parameters) == ["owner", "repo", "title"]
     for name in ("owner", "repo", "title"):
         assert sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
         assert sig.parameters[name].default is inspect.Parameter.empty
     assert create_pr.__doc__ == "Create a pull request."
-    assert create_pr.__rebuno_tool_id__ == "github.create_pr"
+    assert create_pr.__rebuno_tool_id__ == "github_create_pr"
     assert create_pr.__rebuno_remote__ is True
 
 
@@ -128,7 +128,7 @@ async def test_calling_remote_tool_outside_execution_raises():
     handle = remote.Tools("github")
     await handle.connect(_StubClient(SAMPLE_SCHEMAS))
 
-    create_pr = handle["create_pr"]
+    create_pr = handle["github_create_pr"]
     with pytest.raises(RuntimeError, match="outside an active execution"):
         await create_pr(owner="o", repo="r", title="t")
 
@@ -138,7 +138,7 @@ async def test_calling_remote_tool_submits_intent_and_awaits_result():
     client = _StubClient(SAMPLE_SCHEMAS)
     await handle.connect(client)
 
-    create_pr = handle["create_pr"]
+    create_pr = handle["github_create_pr"]
 
     # Build a minimal ExecutionState-shaped object so the wrapper can call
     # _client.submit_intent and _wait correctly.
@@ -159,7 +159,7 @@ async def test_calling_remote_tool_submits_intent_and_awaits_result():
     assert result == {"pr_url": "..."}
     assert len(client.intents) == 1
     assert client.intents[0]["intent_type"] == "invoke_tool"
-    assert client.intents[0]["tool_id"] == "github.create_pr"
+    assert client.intents[0]["tool_id"] == "github_create_pr"
     assert client.intents[0]["remote"] is True
     assert client.intents[0]["arguments"] == {"owner": "o", "repo": "r", "title": "t"}
 
@@ -170,27 +170,27 @@ async def test_connect_all_resolves_every_registered_handle():
 
     schemas = SAMPLE_SCHEMAS + [
         {
-            "id": "compute.heavy",
+            "id": "compute_heavy",
             "description": "Heavy.",
             "input_schema": {"type": "object"},
         }
     ]
     await remote.connect_all(_StubClient(schemas))
 
-    assert {fn.__rebuno_tool_id__ for fn in a} == {"github.create_pr", "github.issue_read"}
-    assert {fn.__rebuno_tool_id__ for fn in b} == {"compute.heavy"}
+    assert {fn.__rebuno_tool_id__ for fn in a} == {"github_create_pr", "github_issue_read"}
+    assert {fn.__rebuno_tool_id__ for fn in b} == {"compute_heavy"}
 
 
 async def test_refresh_picks_up_newly_registered_tools():
     handle = remote.Tools("github")
     client = _StubClient([SAMPLE_SCHEMAS[0]])  # only create_pr at first
     await handle.connect(client)
-    assert set(handle.tools) == {"create_pr"}
+    assert set(handle.tools) == {"github_create_pr"}
 
     # Simulate a runner registering issue_read after agent startup.
     client.schemas = SAMPLE_SCHEMAS
     await handle.refresh(client)
-    assert set(handle.tools) == {"create_pr", "issue_read"}
+    assert set(handle.tools) == {"github_create_pr", "github_issue_read"}
 
 
 async def test_refresh_mutates_tools_dict_in_place():
@@ -203,18 +203,18 @@ async def test_refresh_mutates_tools_dict_in_place():
     await handle.refresh(client)
 
     assert captured is handle.tools
-    assert set(captured) == {"create_pr", "issue_read"}
+    assert set(captured) == {"github_create_pr", "github_issue_read"}
 
 
 async def test_refresh_drops_tools_no_longer_advertised():
     handle = remote.Tools("github")
     client = _StubClient(SAMPLE_SCHEMAS)
     await handle.connect(client)
-    assert set(handle.tools) == {"create_pr", "issue_read"}
+    assert set(handle.tools) == {"github_create_pr", "github_issue_read"}
 
     client.schemas = [SAMPLE_SCHEMAS[0]]  # issue_read's runner disconnected
     await handle.refresh(client)
-    assert set(handle.tools) == {"create_pr"}
+    assert set(handle.tools) == {"github_create_pr"}
 
 
 async def test_refresh_works_when_initial_connect_returned_empty():
@@ -225,7 +225,7 @@ async def test_refresh_works_when_initial_connect_returned_empty():
 
     client.schemas = SAMPLE_SCHEMAS
     await handle.refresh(client)
-    assert set(handle.tools) == {"create_pr", "issue_read"}
+    assert set(handle.tools) == {"github_create_pr", "github_issue_read"}
 
 
 async def test_refresh_all_failure_keeps_previous_tools():
