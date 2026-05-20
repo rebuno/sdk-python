@@ -182,11 +182,7 @@ class _ExecutionProxy:
     def _state(self) -> ExecutionState:
         state = _current.get()
         if state is None:
-            raise RuntimeError(
-                "execution.* accessed outside an active agent execution. "
-                "This proxy is only valid inside @tool functions or handlers "
-                "running under agent.run()."
-            )
+            raise RuntimeError("execution.* accessed without an active execution context")
         return state
 
     def __getattr__(self, name: str) -> Any:

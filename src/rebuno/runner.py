@@ -8,10 +8,12 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from rebuno._internal import install_shutdown_handlers, jittered_backoff
+from rebuno._internal.correlation import CorrelationMap
 from rebuno._internal.schema import fn_to_json_schema
 from rebuno.client import Client
+from rebuno.execution import ExecutionState, _reset_current, _set_current
 from rebuno.mcp import MCPServer, _flatten_mcp_result
-from rebuno.types import Job
+from rebuno.types import ClaimResult, Job
 
 logger = logging.getLogger("rebuno.runner")
 
@@ -203,11 +205,21 @@ class Runner:
         except Exception:
             logger.debug("step_started failed", exc_info=True)
 
+        claim = ClaimResult(
+            execution_id=job.execution_id,
+            session_id="",
+            agent_id="",
+        )
+        state = ExecutionState(self._client, claim, CorrelationMap())
+        token = _set_current(state)
         try:
-            result = await self._dispatch(job.tool_id, job.arguments)
-        except Exception as e:
-            await self._submit_failure(job, e)
-            return
+            try:
+                result = await self._dispatch(job.tool_id, job.arguments)
+            except Exception as e:
+                await self._submit_failure(job, e)
+                return
+        finally:
+            _reset_current(token)
 
         try:
             await self._client.submit_job_result(
