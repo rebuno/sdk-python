@@ -1,0 +1,151 @@
+[
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_0",
+    "occurrence": 0,
+    "args": {
+      "greeting": "world"
+    },
+    "canonical": "{\"greeting\":\"world\"}",
+    "args_hash": "5c0a68e873cfe9b31497be84c0f8f082bfbcad4409171ac8b0044e1ba3ab34bc",
+    "step_id": "1599d345ba8c140e6c6ae015035dbb95b348b98f8892c2f65c060b2d2e16deb5"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_1",
+    "occurrence": 1,
+    "args": {
+      "b": 2,
+      "a": 1
+    },
+    "canonical": "{\"a\":1,\"b\":2}",
+    "args_hash": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
+    "step_id": "1c112aa312583091419c250dd598fa9f4ac5f37eebeb27eade18724dcfa10d83"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_2",
+    "occurrence": 2,
+    "args": {
+      "html": "\u003ca\u003e\u0026\u003c/a\u003e"
+    },
+    "canonical": "{\"html\":\"\\u003ca\\u003e\\u0026\\u003c/a\\u003e\"}",
+    "args_hash": "105ce1eb1cb9de08553984aae3cfd97499c26461bd883b15e152b63a6a1b91f9",
+    "step_id": "4c311078aadd9b8107222e3f022b269a17553c7bd980e3eb3ecd1fcdec3e1ed1"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_3",
+    "occurrence": 0,
+    "args": {
+      "unicode": "café — 日本語"
+    },
+    "canonical": "{\"unicode\":\"café — 日本語\"}",
+    "args_hash": "4dc14f19727f37e80babbb24e3fa6518e88937212494eaa3de95c46d44fbedc3",
+    "step_id": "e257e4efb7192526f3f510be6c19b6a440e733c0908986e98c1b2eee4246f3bb"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_4",
+    "occurrence": 1,
+    "args": {
+      "nested": {
+        "z": [
+          1,
+          2,
+          3
+        ],
+        "a": true
+      },
+      "n": 1.5
+    },
+    "canonical": "{\"n\":1.5,\"nested\":{\"a\":true,\"z\":[1,2,3]}}",
+    "args_hash": "2d0d0264e27ac63390829db77fc4e7dee31deef3b592de7164bf35bc92c58452",
+    "step_id": "88903b97820a3bdbf15b766ec1291b9c8702167255adce20e39f05bc16d984ce"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_5",
+    "occurrence": 2,
+    "args": {},
+    "canonical": "{}",
+    "args_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "step_id": "d117995b7441aa811612f758aa487028507144baef7cdbd0fbc96dadcff2c05a"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_6",
+    "occurrence": 0,
+    "args": {
+      "int": 5,
+      "float": 1.0,
+      "neg": -3,
+      "big": 1000000000000000000000000000000
+    },
+    "canonical": "{\"big\":1000000000000000000000000000000,\"float\":1.0,\"int\":5,\"neg\":-3}",
+    "args_hash": "8372facd36d1be5ea7ba80f2c40d50d94a982afa11622f26edd823f35a8c86af",
+    "step_id": "bb952ba75b9c5b2a6b5b086498eefe81614d0a385d9b070593b68ccaf7acaf7a"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_7",
+    "occurrence": 1,
+    "args": {
+      "ctl": "line1\nline2\ttab"
+    },
+    "canonical": "{\"ctl\":\"line1\\nline2\\ttab\"}",
+    "args_hash": "c633e306ffd15665ec14838ecceacc46b9ac6786f60158834a05c17830d4d44d",
+    "step_id": "0a083e867c2a5f6a9079209336868ec6dd0a8c3a6dbe35a74bc58dbd13b2921b"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_8",
+    "occurrence": 2,
+    "args": [
+      "a",
+      "b"
+    ],
+    "canonical": "[\"a\",\"b\"]",
+    "args_hash": "0473ef2dc0d324ab659d3580c1134e9d812035905c4781fdd6d529b0c6860e13",
+    "step_id": "51f9acf620f69d5ec84b29e07df236100d46a26e4bc8369793380c31d1d814d8"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_9",
+    "occurrence": 0,
+    "args": "plain string",
+    "canonical": "\"plain string\"",
+    "args_hash": "100e95befce5c34a8927f2359d07d340222625dd67a32ea9c96031c7f9b5f74a",
+    "step_id": "b9f0150ec57fbd7104c179908c57896c6326c13274e09b34b97958aa78ef7bb0"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_10",
+    "occurrence": 1,
+    "args": 42,
+    "canonical": "42",
+    "args_hash": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
+    "step_id": "75dcd5bbb2c764bfc3195cedb6e6079a7e483265a01f39442d6f4a6e52810b2f"
+  },
+  {
+    "execution_id": "0192f1a0-0000-7000-8000-000000000000",
+    "kind": "tool_call",
+    "target": "tool_11",
+    "occurrence": 2,
+    "args": null,
+    "canonical": "null",
+    "args_hash": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "step_id": "428f70685d462a8a268db47ef84511fc7f8b67ee0863b78ba3c2f8cf2dd68de7"
+  }
+]

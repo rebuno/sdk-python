@@ -2,42 +2,45 @@
 
 Public surface:
 
-  Agent     — long-lived process consuming executions for one agent_id
-  Client    — HTTP client for external services and tool-side kernel calls
-  Runner    — long-lived process executing tools assigned by the kernel
-  tool      — decorator that registers a function as a Rebuno tool
-  MCPServer — MCP integration
-  remote    — kernel-mediated remote tool discovery (remote.Tools(prefix))
-  execution — ambient accessor for the current ExecutionState
-
+  Agent     — webhook-driven consumer of executions for one agent_id
+  Client    — HTTP client for creating/inspecting executions and approvals
+  tool        — decorator registering an async function as a Rebuno tool
+  wrap_tool   — route an arbitrary (non-decorator) tool through Rebuno
+  step        — record non-deterministic local work as a durable step
+  http_client — an httpx client that records LLM calls as durable steps
+  execution   — ambient accessor for the current ExecutionContext
 """
 
-from rebuno import remote, types
+from rebuno import types
 from rebuno.agent import Agent
 from rebuno.client import Client
 from rebuno.errors import (
     APIError,
-    ConflictError,
+    Blocked,
     NetworkError,
     NotFoundError,
     PolicyError,
+    RateLimited,
     RebunoError,
+    StepIDMismatch,
+    Terminated,
     ToolError,
     UnauthorizedError,
     ValidationError,
 )
 from rebuno.execution import execution
-from rebuno.mcp import MCPServer
-from rebuno.runner import Runner
-from rebuno.tool import tool
+from rebuno.http_client import RebunoTransport, http_client
+from rebuno.step import step
+from rebuno.tool import tool, wrap_tool
 
 __all__ = [
     "Agent",
     "Client",
-    "Runner",
     "tool",
-    "MCPServer",
-    "remote",
+    "wrap_tool",
+    "step",
+    "http_client",
+    "RebunoTransport",
     "execution",
     "types",
     "RebunoError",
@@ -45,8 +48,11 @@ __all__ = [
     "PolicyError",
     "ToolError",
     "NetworkError",
-    "ConflictError",
     "NotFoundError",
     "UnauthorizedError",
     "ValidationError",
+    "StepIDMismatch",
+    "RateLimited",
+    "Blocked",
+    "Terminated",
 ]

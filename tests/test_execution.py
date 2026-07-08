@@ -1,225 +1,248 @@
-"""ExecutionState: invoke_tool / wait_signal / complete / fail flows."""
-
-from __future__ import annotations
-
-import asyncio
-
 import pytest
-from conftest import make_claim
 
-from rebuno._internal.correlation import CorrelationMap
-from rebuno.errors import PolicyError, ToolError
-from rebuno.execution import (
-    ExecutionState,
-    _reset_current,
-    _set_current,
-)
-from rebuno.execution import (
-    execution as proxy,
-)
-from rebuno.types import IntentResult
+from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
+from rebuno.execution import ExecutionContext, _reset_current, _set_current, execution
+from rebuno.identity import args_hash, compute_step_id
+from rebuno.types import Step, StepDecision
 
 
-class _RecordingClient:
-    """Capture calls; configurable intent + step result responses."""
+class FakeKernel:
+    def __init__(self, decisions):
+        self.decisions = list(decisions)
+        self.completed = []
+        self.failed = []
 
-    def __init__(self, *, intent: IntentResult | None = None) -> None:
-        self.calls: list[tuple[str, dict]] = []
-        self._intent = intent or IntentResult(accepted=True, step_id="step-1")
+    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+        return self.decisions.pop(0)
 
-    async def submit_intent(self, **kwargs):
-        self.calls.append(("submit_intent", kwargs))
-        return self._intent
+    async def complete_step(self, execution_id, step_id, *, result):
+        self.completed.append((step_id, result))
 
-    async def report_step_result(self, **kwargs):
-        self.calls.append(("report_step_result", kwargs))
-
-
-def _state(client, *, claim=None) -> ExecutionState:
-    return ExecutionState(client, claim or make_claim(), CorrelationMap(), wait_timeout=2.0)
+    async def fail_step(self, execution_id, step_id, *, error):
+        self.failed.append((step_id, error))
 
 
-async def test_invoke_local_tool_executes_body_and_reports_success():
-    client = _RecordingClient()
-    state = _state(client)
-
-    async def body(a: int, b: int) -> int:
-        return a + b
-
-    result = await state.invoke_tool("test.add", {"a": 2, "b": 3}, local_runner=body)
-    assert result == 5
-
-    methods = [name for name, _ in client.calls]
-    assert methods == ["submit_intent", "report_step_result"]
-    intent_call = client.calls[0][1]
-    assert intent_call["intent_type"] == "invoke_tool"
-    assert intent_call["tool_id"] == "test.add"
-    assert intent_call["remote"] is False
-    step_call = client.calls[1][1]
-    assert step_call["success"] is True
-    assert step_call["data"] == 5
+def ctx(kernel):
+    return ExecutionContext(kernel=kernel, execution_id="e1", agent_id="a", input={"x": 1})
 
 
-async def test_invoke_local_tool_failure_reports_step_failure_and_raises_tool_error():
-    client = _RecordingClient()
-    state = _state(client)
+async def test_proceed_runs_body_and_completes():
+    k = FakeKernel([StepDecision(decision="proceed")])
+    c = ctx(k)
 
-    async def body() -> None:
-        raise ValueError("boom")
+    async def body():
+        return {"echo": "hi"}
 
-    with pytest.raises(ToolError) as exc:
-        await state.invoke_tool("test.bad", {}, local_runner=body)
-    assert "boom" in str(exc.value)
-
-    step_call = client.calls[1][1]
-    assert step_call["success"] is False
-    assert "boom" in step_call["error"]
+    out = await c.invoke_tool("search", {"q": "hi"}, run=body)
+    assert out == {"echo": "hi"}
+    assert k.completed and k.completed[0][1] == {"echo": "hi"}
 
 
-async def test_invoke_denied_intent_raises_policy_error():
-    client = _RecordingClient(intent=IntentResult(accepted=False, error="forbidden"))
-    state = _state(client)
+async def test_replay_returns_recorded_result_without_running():
+    k = FakeKernel([StepDecision(decision="replay", result={"cached": 1})])
+    ran = False
 
-    async def body() -> int:
-        return 1
+    async def body():
+        nonlocal ran
+        ran = True
 
-    with pytest.raises(PolicyError, match="forbidden"):
-        await state.invoke_tool("test.denied", {}, local_runner=body)
-    # only the intent was submitted; no step result
-    assert [name for name, _ in client.calls] == ["submit_intent"]
-
-
-async def test_invoke_remote_waits_on_correlation_result():
-    client = _RecordingClient()
-    state = _state(client)
-
-    async def go():
-        return await state.invoke_tool("compute.heavy", {"x": 1})
-
-    waiter = asyncio.create_task(go())
-    await asyncio.sleep(0)  # let task subscribe
-
-    state._correlation.resolve("result", "step-1", {"status": "succeeded", "result": 99})
-    assert (await waiter) == 99
-
-    intent_call = client.calls[0][1]
-    assert intent_call["remote"] is True
+    out = await ctx(k).invoke_tool("search", {"q": "hi"}, run=body)
+    assert out == {"cached": 1}
+    assert ran is False
 
 
-async def test_invoke_remote_failed_result_raises_tool_error():
-    client = _RecordingClient()
-    state = _state(client)
-
-    async def go():
-        return await state.invoke_tool("compute.heavy", {})
-
-    waiter = asyncio.create_task(go())
-    await asyncio.sleep(0)
-    state._correlation.resolve("result", "step-1", {"status": "failed", "error": "runner died"})
-
-    with pytest.raises(ToolError, match="runner died"):
-        await waiter
+async def test_replay_failed_raises_toolerror():
+    k = FakeKernel([StepDecision(decision="replay", error={"message": "boom"})])
+    with pytest.raises(ToolError):
+        await ctx(k).invoke_tool("t", {}, run=None)
 
 
-async def test_invoke_remote_timeout_raises_rebuno_error():
-    from rebuno.errors import RebunoError
-
-    client = _RecordingClient()
-    state = ExecutionState(client, make_claim(), CorrelationMap(), wait_timeout=0.05)
-
-    with pytest.raises(RebunoError, match="Timed out"):
-        await state.invoke_tool("compute.slow", {})
+async def test_denied_raises_policyerror():
+    k = FakeKernel([StepDecision(decision="denied", reason="nope")])
+    with pytest.raises(PolicyError):
+        await ctx(k).invoke_tool("t", {}, run=None)
 
 
-async def test_invoke_pending_approval_waits_then_proceeds():
-    client = _RecordingClient(
-        intent=IntentResult(accepted=True, step_id="step-1", pending_approval=True),
-    )
-    state = _state(client)
-
-    async def body() -> str:
-        return "ran"
-
-    async def go():
-        return await state.invoke_tool("test.gated", {}, local_runner=body)
-
-    task = asyncio.create_task(go())
-    await asyncio.sleep(0)
-    state._correlation.resolve("approval", "step-1", {"approved": True})
-    assert (await task) == "ran"
+async def test_blocked_raises_blocked():
+    k = FakeKernel([StepDecision(decision="blocked", approval_id="ap1")])
+    with pytest.raises(Blocked) as e:
+        await ctx(k).invoke_tool("t", {}, run=None)
+    assert e.value.approval_id == "ap1"
 
 
-async def test_invoke_pending_approval_denied_raises_policy_error():
-    client = _RecordingClient(
-        intent=IntentResult(accepted=True, step_id="step-1", pending_approval=True),
-    )
-    state = _state(client)
-
-    async def body() -> None: ...
-
-    async def go():
-        await state.invoke_tool("test.gated", {}, local_runner=body)
-
-    task = asyncio.create_task(go())
-    await asyncio.sleep(0)
-    state._correlation.resolve("approval", "step-1", {"approved": False})
-
-    with pytest.raises(PolicyError, match="denied by human approval"):
-        await task
+async def test_rate_limited_and_terminal():
+    with pytest.raises(RateLimited):
+        await ctx(FakeKernel([StepDecision(decision="rate_limited", reason="rl")])).invoke_tool("t", {}, run=None)
+    with pytest.raises(Terminated):
+        await ctx(FakeKernel([StepDecision(decision="execution_terminal")])).invoke_tool("t", {}, run=None)
 
 
-async def test_wait_signal_submits_wait_intent_and_returns_payload():
-    client = _RecordingClient()
-    state = _state(client)
+async def test_body_exception_reports_fail_and_reraises():
+    k = FakeKernel([StepDecision(decision="proceed")])
 
-    async def go():
-        return await state.wait_signal("approval")
+    async def body():
+        raise ValueError("kaboom")
 
-    task = asyncio.create_task(go())
-    await asyncio.sleep(0)
-    state._correlation.resolve("signal", "approval", {"answer": 42})
-
-    assert (await task) == {"answer": 42}
-    assert client.calls[0][1]["intent_type"] == "wait"
-    assert client.calls[0][1]["signal_type"] == "approval"
+    with pytest.raises(ToolError):
+        await ctx(k).invoke_tool("t", {}, run=body)
+    assert k.failed
 
 
-async def test_wait_signal_denied_intent_raises():
-    client = _RecordingClient(intent=IntentResult(accepted=False, error="cannot wait"))
-    state = _state(client)
-    with pytest.raises(PolicyError, match="cannot wait"):
-        await state.wait_signal("approval")
+async def test_occurrence_increments_for_identical_calls():
+    k = FakeKernel([StepDecision(decision="replay", result=1), StepDecision(decision="replay", result=2)])
+    c = ctx(k)
+    seen = []
+
+    async def fake_submit(execution_id, *, kind, target, args, idempotency, step_id):
+        seen.append(step_id)
+        return k.decisions.pop(0)
+
+    k.submit_step = fake_submit
+    await c.invoke_tool("t", {"a": 1}, run=None)
+    await c.invoke_tool("t", {"a": 1}, run=None)
+    assert seen[0] != seen[1]  # different occurrence -> different step id
 
 
-async def test_complete_submits_intent():
-    client = _RecordingClient()
-    state = _state(client)
-    await state.complete({"out": 1})
-    assert client.calls[0][1]["intent_type"] == "complete"
-    assert client.calls[0][1]["output"] == {"out": 1}
+class HydratingKernel(FakeKernel):
+    """FakeKernel that also serves a terminal-step list for hydration and tracks
+    whether submit_step was reached."""
+
+    def __init__(self, decisions, terminal_steps):
+        super().__init__(decisions)
+        self.terminal_steps = terminal_steps
+        self.submits = 0
+
+    async def list_terminal_steps(self, execution_id):
+        return list(self.terminal_steps)
+
+    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+        self.submits += 1
+        return self.decisions.pop(0)
 
 
-async def test_fail_submits_intent():
-    client = _RecordingClient()
-    state = _state(client)
-    await state.fail("oops")
-    assert client.calls[0][1]["intent_type"] == "fail"
-    assert client.calls[0][1]["error"] == "oops"
+def _step_id_for(c, kind, target, args, occ=0):
+    return compute_step_id(c.id, kind, target, args_hash(args), occ)
 
 
-async def test_proxy_resolves_to_state_attributes():
-    client = _RecordingClient()
-    state = _state(client, claim=make_claim(execution_id="abc", session_id="xyz"))
+async def test_hydrated_replay_serves_from_map_without_submit():
+    args = {"q": "hi"}
+    # No decisions queued: if submit_step is reached, .pop(0) raises — proving
+    # the replay came from the hydrated map, not the kernel.
+    k = HydratingKernel([], [])
+    c = ctx(k)
+    sid = _step_id_for(c, "tool_call", "search", args)
+    k.terminal_steps = [Step(step_id=sid, status="succeeded", result={"cached": 1})]
+    await c.hydrate()
 
-    token = _set_current(state)
+    ran = False
+
+    async def body():
+        nonlocal ran
+        ran = True
+
+    out = await c.invoke_tool("search", args, run=body)
+    assert out == {"cached": 1}
+    assert ran is False
+    assert k.submits == 0  # served entirely from the hydrated map
+
+
+async def test_hydrated_miss_falls_through_to_submit():
+    k = HydratingKernel([StepDecision(decision="proceed")], [])  # empty map -> miss
+    c = ctx(k)
+    await c.hydrate()
+
+    async def body():
+        return {"fresh": True}
+
+    out = await c.invoke_tool("search", {"q": "hi"}, run=body)
+    assert out == {"fresh": True}
+    assert k.submits == 1  # miss went to the kernel
+    assert k.completed
+
+
+async def test_hydrated_denied_step_raises_policyerror_without_submit():
+    args = {"x": 1}
+    k = HydratingKernel([], [])
+    c = ctx(k)
+    sid = _step_id_for(c, "tool_call", "danger", args)
+    k.terminal_steps = [Step(step_id=sid, status="denied")]
+    await c.hydrate()
+    with pytest.raises(PolicyError):
+        await c.invoke_tool("danger", args, run=None)
+    assert k.submits == 0
+
+
+async def test_hydrate_failure_falls_back_to_per_step():
+    class BrokenHydrate(FakeKernel):
+        async def list_terminal_steps(self, execution_id):
+            raise RuntimeError("no such endpoint")
+
+    k = BrokenHydrate([StepDecision(decision="replay", result={"ok": 1})])
+    c = ctx(k)
+    await c.hydrate()  # swallows the error
+    assert c._replay is None  # un-hydrated -> per-step path
+    out = await c.invoke_tool("t", {}, run=None)
+    assert out == {"ok": 1}
+
+
+async def test_contextvar_proxy():
+    c = ctx(FakeKernel([]))
+    token = _set_current(c)
     try:
-        assert proxy.id == "abc"
-        assert proxy.session_id == "xyz"
-        assert proxy.input == {"prompt": "hello"}
+        assert execution.id == "e1"
+        assert execution.input == {"x": 1}
     finally:
         _reset_current(token)
 
 
-async def test_proxy_outside_context_raises():
-    with pytest.raises(RuntimeError, match="outside an active agent execution"):
-        _ = proxy.id
+async def test_nested_blocked_propagates_without_failing_outer_step():
+    k = FakeKernel(
+        [
+            StepDecision(decision="proceed"),  # outer step
+            StepDecision(decision="blocked", approval_id="ap1"),  # nested inner step
+        ]
+    )
+    c = ctx(k)
+
+    async def outer_body():
+        # A nested tool/step call on the same context, as happens when a
+        # tool's body itself awaits another @tool or rebuno.step call.
+        return await c.invoke_tool("inner", {}, run=None)
+
+    with pytest.raises(Blocked):
+        await c.invoke_tool("outer", {}, run=outer_body)
+    assert k.failed == []
+    assert k.completed == []
+
+
+async def test_nested_rate_limited_propagates_without_failing_outer_step():
+    k = FakeKernel(
+        [
+            StepDecision(decision="proceed"),
+            StepDecision(decision="rate_limited", reason="rl"),
+        ]
+    )
+    c = ctx(k)
+
+    async def outer_body():
+        return await c.invoke_tool("inner", {}, run=None)
+
+    with pytest.raises(RateLimited):
+        await c.invoke_tool("outer", {}, run=outer_body)
+    assert k.failed == []
+
+
+async def test_fail_step_failure_does_not_mask_original_exception():
+    class FlakyKernel(FakeKernel):
+        async def fail_step(self, execution_id, step_id, *, error):
+            raise RuntimeError("network blip")
+
+    k = FlakyKernel([StepDecision(decision="proceed")])
+
+    async def body():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ToolError) as exc_info:
+        await ctx(k).invoke_tool("t", {}, run=body)
+    assert "kaboom" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, ValueError)

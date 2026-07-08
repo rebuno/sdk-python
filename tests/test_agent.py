@@ -1,184 +1,145 @@
-"""Agent: handler binding, dispatch, error handling at the execution level."""
+import hashlib
+import hmac
+import json
 
-from __future__ import annotations
+import pytest
+from fastapi.testclient import TestClient
 
-from conftest import make_claim
+from rebuno.agent import Agent
 
-from rebuno import Agent
-from rebuno.types import IntentResult
-
-
-class _SpyClient:
-    """Replaces Client on a real Agent. Captures intent + report calls.
-    Returns IntentResult.accepted=True for everything."""
-
-    def __init__(self):
-        self.intents: list[dict] = []
-        self.steps: list[dict] = []
-
-    async def submit_intent(self, **kwargs):
-        self.intents.append(kwargs)
-        return IntentResult(accepted=True, step_id=f"step-{len(self.intents)}")
-
-    async def report_step_result(self, **kwargs):
-        self.steps.append(kwargs)
-
-    async def close(self):
-        pass
+SECRET = "dev-secret"
 
 
-def _agent_with_spy() -> tuple[Agent, _SpyClient]:
-    agent = Agent("test", kernel_url="http://test", api_key="k")
-    spy = _SpyClient()
-    agent._client = spy  # type: ignore[assignment]
-    return agent, spy
+def sign(body: bytes) -> str:
+    return "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
 
 
-async def test_handler_kwargs_passed_and_output_completes():
-    agent, spy = _agent_with_spy()
+class FakeKernel:
+    def __init__(self, input):
+        self._input = input
+        self.completed = None
+        self.failed = None
 
-    async def handler(prompt: str, repo_url: str = "x") -> dict:
-        return {"got": prompt, "repo": repo_url}
+    async def get_execution(self, execution_id):
+        from rebuno.types import Execution
 
-    from rebuno._internal.inputs import InputBinder
+        return Execution(id=execution_id, agent_id="a", input=self._input, status="running")
 
-    agent._handler = handler
-    agent._binder = InputBinder(handler)
+    async def complete_execution(self, execution_id, *, output):
+        self.completed = output
 
-    await agent._handle_execution(make_claim(input={"prompt": "hi"}))
-
-    completes = [i for i in spy.intents if i["intent_type"] == "complete"]
-    assert len(completes) == 1
-    assert completes[0]["output"] == {"got": "hi", "repo": "x"}
-
-
-async def test_handler_missing_required_input_fails_execution_with_clear_error():
-    agent, spy = _agent_with_spy()
-
-    async def handler(prompt: str): ...
-
-    from rebuno._internal.inputs import InputBinder
-
-    agent._handler = handler
-    agent._binder = InputBinder(handler)
-
-    await agent._handle_execution(make_claim(input={}))  # missing prompt
-
-    fails = [i for i in spy.intents if i["intent_type"] == "fail"]
-    assert len(fails) == 1
-    assert "missing required input fields" in fails[0]["error"]
-    assert "prompt" in fails[0]["error"]
+    async def fail_execution(self, execution_id, *, error):
+        self.failed = error
 
 
-async def test_handler_raising_exception_fails_execution():
-    agent, spy = _agent_with_spy()
-
-    async def handler(prompt: str):
-        raise RuntimeError("kaboom")
-
-    from rebuno._internal.inputs import InputBinder
-
-    agent._handler = handler
-    agent._binder = InputBinder(handler)
-
-    await agent._handle_execution(make_claim(input={"prompt": "hi"}))
-
-    fails = [i for i in spy.intents if i["intent_type"] == "fail"]
-    assert len(fails) == 1
-    assert "kaboom" in fails[0]["error"]
+def build(agent, kernel):
+    agent._kernel = kernel  # inject fake
+    return TestClient(agent.app)
 
 
-async def test_execution_context_is_set_inside_handler_and_cleared_after():
-    from rebuno.execution import _get_current
-
-    agent, spy = _agent_with_spy()
-    seen = {}
-
-    async def handler(prompt: str) -> str:
-        state = _get_current()
-        seen["state"] = state
-        seen["id"] = state.id  # type: ignore[union-attr]
-        return prompt
-
-    from rebuno._internal.inputs import InputBinder
-
-    agent._handler = handler
-    agent._binder = InputBinder(handler)
-
-    claim = make_claim(execution_id="e-42", input={"prompt": "yo"})
-    await agent._handle_execution(claim)
-
-    assert seen["id"] == "e-42"
-    assert _get_current() is None
+def webhook_body(execution_id="e1", dispatch_id="d1") -> bytes:
+    return json.dumps({"execution_id": execution_id, "dispatch_id": dispatch_id}).encode()
 
 
-async def test_dispatch_tool_result_resolves_correlation_future():
-    import json as _json
-
-    from rebuno._internal.correlation import CorrelationMap
-    from rebuno._internal.sse import SSEEvent
-
-    agent, _ = _agent_with_spy()
-    cm = CorrelationMap()
-    agent._exec_correlation["e-1"] = cm
-    fut = cm.future("result", "step-1")
-
-    await agent._dispatch(
-        SSEEvent(
-            type="tool.result",
-            data=_json.dumps(
-                {
-                    "execution_id": "e-1",
-                    "step_id": "step-1",
-                    "status": "succeeded",
-                    "result": 42,
-                }
-            ),
-        )
-    )
-    assert fut.done()
-    payload = await fut
-    assert payload["result"] == 42
+async def _process_ok(prompt: str):
+    return {"answer": prompt.upper()}
 
 
-async def test_dispatch_signal_received_resolves_correlation():
-    import json as _json
-
-    from rebuno._internal.correlation import CorrelationMap
-    from rebuno._internal.sse import SSEEvent
-
-    agent, _ = _agent_with_spy()
-    cm = CorrelationMap()
-    agent._exec_correlation["e-1"] = cm
-    fut = cm.future("signal", "approval")
-
-    await agent._dispatch(
-        SSEEvent(
-            type="signal.received",
-            data=_json.dumps(
-                {
-                    "execution_id": "e-1",
-                    "signal_type": "approval",
-                    "payload": {"ok": True},
-                }
-            ),
-        )
-    )
-    assert (await fut) == {"ok": True}
+def test_invalid_signature_401():
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(_process_ok)
+    client = build(agent, FakeKernel({"prompt": "hi"}))
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": "sha256=bad"})
+    assert r.status_code == 401
 
 
-async def test_dispatch_unknown_execution_id_is_silently_ignored():
-    """SSE for an execution we no longer track must not crash."""
-    import json as _json
+def test_completes_execution():
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(_process_ok)
+    k = FakeKernel({"prompt": "hi"})
+    client = build(agent, k)
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+    assert r.status_code == 200
+    assert k.completed == {"answer": "HI"}
 
-    from rebuno._internal.sse import SSEEvent
 
-    agent, _ = _agent_with_spy()
-    # No correlation registered for execution "ghost".
-    await agent._dispatch(
-        SSEEvent(
-            type="tool.result",
-            data=_json.dumps({"execution_id": "ghost", "step_id": "x"}),
-        )
-    )
-    # No exception is success.
+def test_blocked_returns_200_without_complete():
+    from rebuno.errors import Blocked
+
+    async def proc(prompt: str):
+        raise Blocked("ap1")
+
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    client = build(agent, k)
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+    assert r.status_code == 200
+    assert k.completed is None
+
+
+def test_process_exception_fails_execution():
+    async def proc(prompt: str):
+        raise ValueError("boom")
+
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    client = build(agent, k)
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+    assert r.status_code == 200
+    assert k.failed and "boom" in k.failed
+
+
+def test_rate_limited_fails_execution_cleanly():
+    from rebuno.errors import RateLimited
+
+    async def proc(prompt: str):
+        raise RateLimited("rate_limit_exceeded")
+
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    client = build(agent, k)
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+    assert r.status_code == 200
+    assert k.failed and "rate_limit_exceeded" in k.failed
+
+
+def test_step_id_mismatch_fails_execution_cleanly():
+    from rebuno.errors import StepIDMismatch
+
+    async def proc(prompt: str):
+        raise StepIDMismatch("step id divergence", code="step_id_divergence", status_code=409)
+
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    client = build(agent, k)
+    body = webhook_body()
+    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+    assert r.status_code == 200
+    assert k.failed and "step id divergence" in k.failed
+
+
+def test_empty_secret_raises(monkeypatch):
+    monkeypatch.delenv("REBUNO_AGENT_SECRET", raising=False)
+    with pytest.raises(ValueError):
+        Agent("a", secret="", kernel_url="http://k")
+    with pytest.raises(ValueError):
+        Agent("a", kernel_url="http://k")
+
+
+def test_default_kernel_timeout_applied():
+    agent = Agent("a", secret=SECRET, kernel_url="http://k")
+    assert agent._http.timeout.connect == 35.0
+
+
+def test_custom_kernel_timeout_applied():
+    agent = Agent("a", secret=SECRET, kernel_url="http://k", kernel_timeout=5.0)
+    assert agent._http.timeout.connect == 5.0

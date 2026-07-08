@@ -1,313 +1,169 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
+import hashlib
+import hmac
 import json
 import logging
-import uuid
-from collections.abc import Callable
+import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
-from rebuno._internal import install_shutdown_handlers, jittered_backoff
-from rebuno._internal.correlation import CorrelationMap
-from rebuno._internal.inputs import InputBinder
-from rebuno._internal.sse import SSEEvent
-from rebuno.client import Client
-from rebuno.errors import ClientClosedError, PolicyError, ToolError, UnauthorizedError
-from rebuno.execution import ExecutionState, _reset_current, _set_current
-from rebuno.mcp import connect_all as connect_all_mcp
-from rebuno.mcp import disconnect_all as disconnect_all_mcp
-from rebuno.remote import connect_all as connect_all_remote
-from rebuno.remote import disconnect_all as disconnect_all_remote
-from rebuno.remote import refresh_all as refresh_all_remote
-from rebuno.types import ClaimResult
+import httpx
+from fastapi import FastAPI, Request, Response
+
+from rebuno._internal import InputBinder
+from rebuno._kernel import KernelClient
+from rebuno.errors import Blocked, PolicyError, RateLimited, StepIDMismatch, Terminated, ToolError
+from rebuno.execution import ExecutionContext, _reset_current, _set_current
 
 logger = logging.getLogger("rebuno.agent")
 
 
-def _agent_logger(agent_id: str) -> logging.Logger:
-    # Dots in agent_id would create unintended logger hierarchy levels.
-    safe = agent_id.replace(".", "-")
-    return logger.getChild(safe)
-
-
 class Agent:
-    """A long-lived consumer of executions for a single agent_id.
-
-    Args:
-        agent_id: The agent ID to register as.
-        kernel_url: Override REBUNO_URL env var.
-        api_key: Override REBUNO_API_KEY env var.
-        consumer_id: Unique consumer identifier (auto-generated if empty).
-        reconnect_delay: Initial reconnect delay in seconds.
-        max_reconnect_delay: Cap on backoff delay.
-    """
+    """A webhook-driven consumer of executions for a single agent_id."""
 
     def __init__(
         self,
         agent_id: str,
         *,
+        secret: str | None = None,
         kernel_url: str | None = None,
-        api_key: str | None = None,
-        consumer_id: str = "",
-        reconnect_delay: float = 3.0,
-        max_reconnect_delay: float = 60.0,
+        webhook_path: str = "/webhook",
+        kernel_timeout: float = 35.0,
     ):
         if not agent_id:
             raise ValueError("agent_id must not be empty")
         self.agent_id = agent_id
-        self.consumer_id = consumer_id or f"{agent_id}-{uuid.uuid4().hex[:8]}"
-        self._logger = _agent_logger(agent_id)
-        self.reconnect_delay = reconnect_delay
-        self.max_reconnect_delay = max_reconnect_delay
-
-        self._client = Client(base_url=kernel_url, api_key=api_key)
-        self._handler: Callable[..., Any] | None = None
+        self.secret = secret if secret is not None else os.environ.get("REBUNO_AGENT_SECRET", "")
+        if not self.secret:
+            raise ValueError("secret required (set REBUNO_AGENT_SECRET or pass secret=)")
+        self.kernel_url = (kernel_url or os.environ.get("REBUNO_URL", "")).rstrip("/")
+        if not self.kernel_url:
+            raise ValueError("kernel_url required (set REBUNO_URL or pass kernel_url=)")
+        self.webhook_path = webhook_path
+        self._process: Callable[..., Any] | None = None
         self._binder: InputBinder | None = None
-        self._running = False
-        self._shutdown = asyncio.Event()
-        self._connect_task: asyncio.Task[None] | None = None
-        self._exec_correlation: dict[str, CorrelationMap] = {}
-        self._exec_tasks: dict[str, asyncio.Task[None]] = {}
-        self._shutdown_drain_timeout: float = 5.0
+        self._http = httpx.AsyncClient(base_url=self.kernel_url, timeout=kernel_timeout)
+        self._kernel = KernelClient(agent_id=agent_id, secret=self.secret, http=self._http)
+        self._app: FastAPI | None = None
+        self._closed = False
 
-    def run(self, handler: Callable[..., Any]) -> None:
-        """Block on the agent loop. Convenience wrapper over ``asyncio.run``."""
-        asyncio.run(self.run_async(handler))
+    def bind(self, process: Callable[..., Any]) -> None:
+        self._process = process
+        self._binder = InputBinder(process)
 
-    async def run_async(self, handler: Callable[..., Any]) -> None:
-        """Run the agent loop in the current event loop."""
-        self._handler = handler
-        self._binder = InputBinder(handler)
-        self._running = True
-        self._shutdown.clear()
+    @property
+    def app(self) -> FastAPI:
+        if self._app is None:
+            self._app = self._build_app()
+        return self._app
 
-        install_shutdown_handlers(self._handle_shutdown)
+    def _build_app(self) -> FastAPI:
+        @asynccontextmanager
+        async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+            # Close the kernel HTTP client during ASGI shutdown, on the same
+            # event loop that opened its connections. Doing it here (rather than
+            # on a fresh loop after the server stops) avoids touching transports
+            # whose loop has already been torn down.
+            yield
+            await self.close()
 
-        self._logger.info(
-            "Agent started: agent_id=%s consumer_id=%s",
-            self.agent_id,
-            self.consumer_id,
-        )
+        app = FastAPI(lifespan=lifespan)
 
-        # Best-effort MCP + remote startup; failures don't block agent boot.
-        try:
-            await connect_all_mcp()
-        except Exception:
-            self._logger.exception("MCP startup error")
-        try:
-            await connect_all_remote(self._client)
-        except Exception:
-            self._logger.exception("Remote tools startup error")
-
-        consecutive_failures = 0
-        try:
-            while self._running:
-                try:
-                    self._connect_task = asyncio.ensure_future(self._stream_loop())
-                    await self._connect_task
-                    consecutive_failures = 0
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    consecutive_failures += 1
-                    self._logger.warning(
-                        "SSE connection dropped, reconnecting: %s: %s",
-                        type(e).__name__,
-                        e,
-                    )
-                    if not self._running:
-                        break
-                    delay = jittered_backoff(
-                        self.reconnect_delay,
-                        consecutive_failures,
-                        self.max_reconnect_delay,
-                    )
-                    try:
-                        await asyncio.wait_for(self._shutdown.wait(), timeout=delay)
-                        break
-                    except TimeoutError:
-                        pass
-        finally:
-            await self._drain_exec_tasks()
-            await disconnect_all_mcp()
-            await disconnect_all_remote()
-            await self._client.close()
-            self._logger.info("Agent stopped")
-
-    async def _drain_exec_tasks(self) -> None:
-        """Wait for in-flight execution tasks to finish before closing the client.
-
-        Gives them a brief grace period to complete their terminal intent, then
-        cancels any stragglers and awaits cancellation. Without this, the
-        client closes underneath running tasks and they crash trying to submit
-        their final intent.
-        """
-        if not self._exec_tasks:
-            return
-        pending = list(self._exec_tasks.values())
-        self._logger.info("Draining %d in-flight execution task(s)", len(pending))
-        done, still_pending = await asyncio.wait(
-            pending, timeout=self._shutdown_drain_timeout
-        )
-        if still_pending:
-            self._logger.warning(
-                "Cancelling %d execution task(s) that did not finish within %.1fs",
-                len(still_pending),
-                self._shutdown_drain_timeout,
-            )
-            for t in still_pending:
-                t.cancel()
-            await asyncio.gather(*still_pending, return_exceptions=True)
-
-    def _handle_shutdown(self) -> None:
-        self._logger.info("Shutdown signal received")
-        self._running = False
-        self._shutdown.set()
-        if self._connect_task and not self._connect_task.done():
-            self._connect_task.cancel()
-
-    async def _stream_loop(self) -> None:
-        self._logger.info("SSE connection established")
-        async for sse in self._client.agent_stream(self.agent_id, self.consumer_id):
-            if not self._running:
-                return
-            await self._dispatch(sse)
-
-    async def _dispatch(self, sse: SSEEvent) -> None:
-        if sse.type == "execution.assigned":
-            data = json.loads(sse.data)
-            claim = ClaimResult(**data)
-            eid = claim.execution_id
-            task = asyncio.create_task(self._handle_execution(claim))
-            self._exec_tasks[eid] = task
-            task.add_done_callback(lambda t, k=eid: self._exec_tasks.pop(k, None))
-            task.add_done_callback(self._log_task_exception)
-            return
-
-        data = json.loads(sse.data)
-        execution_id = data.get("execution_id", "")
-
-        if sse.type == "execution.cancelled":
-            task = self._exec_tasks.get(execution_id)
-            if task is not None:
-                self._logger.info(
-                    "Execution cancelled by kernel; cancelling handler task: execution_id=%s",
-                    execution_id,
-                )
-                task.cancel()
-            return
-
-        correlation = self._exec_correlation.get(execution_id)
-        if correlation is None:
-            return
-
-        if sse.type == "tool.result":
-            correlation.resolve("result", data.get("step_id", ""), data)
-        elif sse.type == "signal.received":
-            correlation.resolve("signal", data.get("signal_type", ""), data.get("payload"))
-        elif sse.type == "approval.resolved":
-            correlation.resolve("approval", data.get("step_id", ""), data)
-
-    async def _handle_execution(self, claim: ClaimResult) -> None:
-        eid = claim.execution_id
-        self._logger.info(
-            "Execution assigned: execution_id=%s session_id=%s",
-            eid,
-            claim.session_id,
-        )
-
-        correlation = CorrelationMap()
-        self._exec_correlation[eid] = correlation
-        state = ExecutionState(self._client, claim, correlation)
-
-        token = _set_current(state)
-        try:
-            await refresh_all_remote(self._client)
-
-            assert self._binder is not None
+        @app.post(self.webhook_path)
+        async def webhook(request: Request) -> Response:
+            raw = await request.body()
+            sig = request.headers.get("Rebuno-Signature", "")
+            if not self._verify(raw, sig):
+                return Response(status_code=401)
+            payload = _safe_json(raw)
+            execution_id = (payload or {}).get("execution_id")
+            if not execution_id:
+                return Response(status_code=400)
             try:
-                kwargs = self._binder.bind(claim.input)
+                await self._handle(execution_id)
+                return Response(status_code=200)
+            except (Blocked, Terminated):
+                return Response(status_code=200)
+            except Exception:
+                logger.exception("internal error handling execution %s", execution_id)
+                return Response(status_code=500)
+
+        return app
+
+    def _verify(self, raw: bytes, header: str) -> bool:
+        if not header.startswith("sha256="):
+            return False
+        expected = hmac.new(self.secret.encode(), raw, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(header[len("sha256=") :], expected)
+
+    async def _handle(self, execution_id: str) -> None:
+        assert self._process is not None and self._binder is not None
+        exec = await self._kernel.get_execution(execution_id)
+        if exec.status in ("completed", "failed", "cancelled"):
+            return
+
+        ctx = ExecutionContext(
+            kernel=self._kernel,
+            execution_id=execution_id,
+            agent_id=self.agent_id,
+            input=exec.input,
+            status=exec.status,
+        )
+        # Preload prior terminal steps in one read so re-dispatch replays from a
+        # local map instead of a kernel round trip per step.
+        await ctx.hydrate()
+        token = _set_current(ctx)
+        try:
+            try:
+                kwargs = self._binder.bind(exec.input)
             except ValueError as e:
-                await self._fail(eid, claim.session_id, str(e))
+                await self._kernel.fail_execution(execution_id, error=str(e))
                 return
-
             try:
-                output = self._handler(**kwargs) if self._handler else None
-                if inspect.isawaitable(output):
+                output = self._process(**kwargs)
+                if hasattr(output, "__await__"):
                     output = await output
-            except (PolicyError, ToolError) as e:
-                self._logger.warning("Execution failed: execution_id=%s error=%s", eid, e)
-                await self._fail(eid, claim.session_id, str(e))
+            except (Blocked, Terminated):
+                raise
+            except (PolicyError, ToolError, RateLimited, StepIDMismatch) as e:
+                await self._kernel.fail_execution(execution_id, error=str(e))
                 return
             except Exception as e:
-                self._logger.exception("Process error: execution_id=%s", eid)
-                await self._fail(eid, claim.session_id, str(e))
+                logger.exception("process error: execution_id=%s", execution_id)
+                await self._kernel.fail_execution(execution_id, error=str(e))
                 return
-
-            try:
-                await self._client.submit_intent(
-                    execution_id=eid,
-                    session_id=claim.session_id,
-                    intent_type="complete",
-                    output=output,
-                )
-                self._logger.info("Execution completed: execution_id=%s", eid)
-            except ClientClosedError:
-                self._logger.info(
-                    "Client closed before completion intent could be submitted; "
-                    "agent is shutting down: execution_id=%s",
-                    eid,
-                )
-            except UnauthorizedError as e:
-                if _is_session_gone(e):
-                    self._logger.warning(
-                        "Session expired before completion; kernel will reassign: execution_id=%s",
-                        eid,
-                    )
-                else:
-                    raise
+            await self._kernel.complete_execution(execution_id, output=output)
         finally:
             _reset_current(token)
-            correlation.cancel_all()
-            self._exec_correlation.pop(eid, None)
 
-    async def _fail(self, execution_id: str, session_id: str, error: str) -> None:
-        try:
-            await self._client.submit_intent(
-                execution_id=execution_id,
-                session_id=session_id,
-                intent_type="fail",
-                error=error,
-            )
-        except ClientClosedError:
-            self._logger.info(
-                "Client closed before fail intent could be submitted; "
-                "agent is shutting down: execution_id=%s original_error=%s",
-                execution_id,
-                error,
-            )
-        except UnauthorizedError as e:
-            if _is_session_gone(e):
-                self._logger.warning(
-                    "Session expired before fail intent could be submitted: "
-                    "execution_id=%s original_error=%s",
-                    execution_id,
-                    error,
-                )
-            else:
-                self._logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
-        except Exception:
-            self._logger.exception("Failed to submit fail intent: execution_id=%s", execution_id)
-
-    def _log_task_exception(self, task: asyncio.Task[Any]) -> None:
-        if task.cancelled():
+    async def close(self) -> None:
+        if self._closed:
             return
-        exc = task.exception()
-        if exc is not None:
-            self._logger.error("Unhandled exception in execution task: %s", exc, exc_info=exc)
+        self._closed = True
+        try:
+            await self._http.aclose()
+        except RuntimeError:
+            # The transport's event loop was already torn down (e.g. an abrupt
+            # shutdown closed connections out from under us). Nothing left to do.
+            logger.debug("ignoring transport error during close", exc_info=True)
+
+    def run(self, process: Callable[..., Any], *, host: str = "0.0.0.0", port: int = 5000) -> None:
+        """Bind the process and serve the webhook app with uvicorn (blocking)."""
+        import asyncio
+
+        import uvicorn
+
+        self.bind(process)
+        try:
+            uvicorn.run(self.app, host=host, port=port)
+        finally:
+            asyncio.run(self.close())
 
 
-def _is_session_gone(e: UnauthorizedError) -> bool:
-    msg = str(e).lower()
-    return "session expired" in msg or "session not found" in msg
+def _safe_json(raw: bytes) -> dict[str, Any] | None:
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None

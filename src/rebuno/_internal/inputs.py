@@ -46,25 +46,25 @@ class InputBinder:
                 return "raw", None
         return "kwargs", None
 
-    def bind(self, claim_input: Any) -> dict[str, Any]:
-        """Convert claim.input into the kwargs the handler expects.
+    def bind(self, execution_input: Any) -> dict[str, Any]:
+        """Convert an execution's input into the kwargs the handler expects.
 
         Raises ValueError on validation failure (used to fail the execution
         with a clear message before the handler runs).
         """
         if self.shape == "raw":
-            return {next(iter(self.sig.parameters)): claim_input}
+            return {next(iter(self.sig.parameters)): execution_input}
 
         if self.shape == "model":
             assert self.model is not None
-            data = claim_input if isinstance(claim_input, dict) else {}
+            data = execution_input if isinstance(execution_input, dict) else {}
             try:
                 model = self.model(**data)
             except Exception as e:
                 raise ValueError(f"input validation failed: {e}") from e
             return {next(iter(self.sig.parameters)): model}
 
-        data = claim_input if isinstance(claim_input, dict) else {}
+        data = execution_input if isinstance(execution_input, dict) else {}
         missing = [name for name in self.required if name not in data]
         if missing:
             raise ValueError(f"missing required input fields: {', '.join(missing)}")

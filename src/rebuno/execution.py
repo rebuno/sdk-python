@@ -1,185 +1,199 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
-import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from rebuno._internal.correlation import CorrelationMap
-from rebuno.errors import PolicyError, RebunoError, ToolError
-from rebuno.types import ClaimResult, HistoryEntry
-
-if TYPE_CHECKING:
-    from rebuno.client import Client
+from rebuno.errors import Blocked, PolicyError, RateLimited, RebunoError, Terminated, ToolError
+from rebuno.identity import args_hash, compute_step_id
+from rebuno.types import Step, StepDecision
 
 logger = logging.getLogger("rebuno.execution")
 
 
-class ExecutionState:
-    """Backs the `execution` proxy. One instance per assigned execution."""
+class ExecutionContext:
+    """One per dispatch. Drives effect submission, replay, and occurrence counting."""
 
-    def __init__(
-        self,
-        client: Client,
-        claim: ClaimResult,
-        correlation: CorrelationMap,
-        wait_timeout: float = 3600.0,
-    ):
-        self._client = client
-        self._claim = claim
-        self._correlation = correlation
-        self._wait_timeout = wait_timeout
-        self.id: str = claim.execution_id
-        self.session_id: str = claim.session_id
-        self.agent_id: str = claim.agent_id
-        self.input: Any = claim.input
-        self.labels: dict[str, str] = claim.labels
-        self.history: list[HistoryEntry] = claim.history
+    def __init__(self, *, kernel: Any, execution_id: str, agent_id: str, input: Any, status: str = "running"):
+        self._kernel = kernel
+        self.id = execution_id
+        self.agent_id = agent_id
+        self.input = input
+        self.status = status
+        self._occurrences: dict[tuple[str, str, str], int] = {}
+        self._replay: dict[str, Step] | None = None
 
-    async def _wait(self, kind: str, key: str, timeout_msg: str) -> Any:
-        fut = self._correlation.future(kind, key)
+    async def hydrate(self) -> None:
+        """Preload this execution's terminal steps in one read so replay costs a
+        single bulk fetch instead of one kernel round trip per replayed step.
+        """
         try:
-            return await asyncio.wait_for(fut, timeout=self._wait_timeout)
-        except TimeoutError as e:
-            raise RebunoError(timeout_msg) from e
+            steps = await self._kernel.list_terminal_steps(self.id)
+        except Exception:
+            logger.warning("step hydration failed; falling back to per-step replay", exc_info=True)
+            self._replay = None
+            return
+        self._replay = {s.step_id: s for s in steps}
+
+    async def _decide(self, *, kind: str, target: str, args: Any, idempotency: str, step_id: str) -> StepDecision:
+        """Resolve a step decision: from the hydrated replay map when the step is
+        already terminal, otherwise by asking the kernel.
+
+        A map miss is not "new" — the step may be non-terminal (an orphan still
+        ``executing``, or ``awaiting_approval``) and must re-hit the kernel so
+        idempotency/approval logic runs. Only the kernel mints new steps.
+        """
+        if self._replay is not None:
+            hit = self._replay.get(step_id)
+            if hit is not None:
+                return _decision_from_step(hit)
+        return await self._kernel.submit_step(
+            self.id, kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id
+        )
+
+    def _next_occurrence(self, kind: str, target: str, ah: str) -> int:
+        key = (kind, target, ah)
+        n = self._occurrences.get(key, 0)
+        self._occurrences[key] = n + 1
+        return n
+
+    def _raise_for_decision(self, dec: StepDecision) -> None:
+        """Map a non-proceed step decision to its control-flow exception.
+
+        Returns normally only for ``proceed``. ``replay`` carries an
+        effect-specific result/error and is handled by the caller before this.
+        """
+        if dec.decision == "denied":
+            raise PolicyError(dec.reason or "denied by policy")
+        if dec.decision == "rate_limited":
+            raise RateLimited(dec.reason or "rate_limit_exceeded")
+        if dec.decision in ("blocked", "execution_blocked"):
+            raise Blocked(dec.approval_id)
+        if dec.decision == "execution_terminal":
+            raise Terminated("execution is terminal")
+        if dec.decision != "proceed":
+            raise RebunoError(f"unexpected step decision: {dec.decision}")
 
     async def invoke_tool(
         self,
-        tool_id: str,
-        arguments: Any = None,
+        target: str,
+        args: dict[str, Any],
         *,
-        idempotency_key: str = "",
-        local_runner: Any = None,
+        idempotency: str = "safe_to_retry",
+        run: Callable[[], Any] | None = None,
     ) -> Any:
-        """Submit an invoke_tool intent and await the result.
+        """Submit a step and, if the kernel says proceed, run the body.
 
-        If ``local_runner`` is provided it's a callable that executes the tool
-        body locally after the kernel allows it. Otherwise the kernel routes
-        the call to a runner (remote tool).
+        ``run`` is called with no arguments — callers close over whatever
+        inputs the body needs. ``args`` is only the JSON-recorded payload
+        used for step identity/hashing, not ``run``'s call signature.
         """
-        if not idempotency_key:
-            idempotency_key = f"{self.id}:{tool_id}:{uuid.uuid4().hex[:8]}"
+        kind = "tool_call"
+        ah = args_hash(args)
+        occ = self._next_occurrence(kind, target, ah)
+        step_id = compute_step_id(self.id, kind, target, ah, occ)
 
-        result = await self._client.submit_intent(
-            execution_id=self.id,
-            session_id=self.session_id,
-            intent_type="invoke_tool",
-            tool_id=tool_id,
-            arguments=arguments,
-            idempotency_key=idempotency_key,
-            remote=local_runner is None,
-        )
-        if not result.accepted:
-            raise PolicyError(result.error or "Intent denied by policy")
-        if not result.step_id:
-            raise RebunoError("No step_id returned for invoke_tool intent")
+        dec = await self._decide(kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id)
 
-        if result.pending_approval:
-            approval = await self._wait(
-                "approval",
-                result.step_id,
-                f"Timed out waiting for approval (step_id={result.step_id})",
-            )
-            if not approval.get("approved", False):
-                raise PolicyError("Tool invocation denied by human approval")
+        if dec.decision == "replay":
+            if dec.error is not None:
+                raise ToolError(_error_message(dec.error), tool_id=target, step_id=step_id)
+            return dec.result
+        self._raise_for_decision(dec)
 
-        if local_runner is not None:
-            return await self._execute_local(result.step_id, tool_id, arguments, local_runner)
-
-        data = await self._wait(
-            "result",
-            result.step_id,
-            f"Timed out waiting for tool result (step_id={result.step_id})",
-        )
-        if data.get("status") == "failed":
-            raise ToolError(
-                message=data.get("error", "Tool execution failed"),
-                tool_id=tool_id,
-                step_id=result.step_id,
-            )
-        return data.get("result")
-
-    async def _execute_local(
-        self,
-        step_id: str,
-        tool_id: str,
-        arguments: Any,
-        fn: Any,
-    ) -> Any:
-        kwargs = arguments if isinstance(arguments, dict) else {}
+        # proceed: run the body, record the outcome.
+        if run is None:
+            await self._kernel.complete_step(self.id, step_id, result=None)
+            return None
         try:
-            output = fn(**kwargs)
-            if inspect.isawaitable(output):
-                output = await output
+            result = run()
+            if inspect.isawaitable(result):
+                result = await result
+        except (Blocked, Terminated, PolicyError, RateLimited):
+            raise
         except Exception as e:
-            await self._client.report_step_result(
-                execution_id=self.id,
-                session_id=self.session_id,
-                step_id=step_id,
-                success=False,
-                error=str(e),
-            )
+            await self._fail_step_quietly(step_id, e)
             if isinstance(e, ToolError):
                 raise
-            raise ToolError(message=str(e), tool_id=tool_id, step_id=step_id) from e
+            raise ToolError(str(e), tool_id=target, step_id=step_id) from e
+        await self._kernel.complete_step(self.id, step_id, result=result)
+        return result
 
-        await self._client.report_step_result(
-            execution_id=self.id,
-            session_id=self.session_id,
-            step_id=step_id,
-            success=True,
-            data=output,
-        )
-        return output
+    async def invoke_llm(self, target: str, request: Any, *, run: Callable[[], Any]) -> Any:
+        """Submit an ``llm_call`` step; replay the recorded response or run the
+        provider call and record it.
 
-    async def wait_signal(self, signal_type: str) -> Any:
-        """Wait for a signal of the given type."""
-        result = await self._client.submit_intent(
-            execution_id=self.id,
-            session_id=self.session_id,
-            intent_type="wait",
-            signal_type=signal_type,
-        )
-        if not result.accepted:
-            raise PolicyError(result.error or "Wait intent denied")
-        return await self._wait(
-            "signal",
-            signal_type,
-            f"Timed out waiting for signal: {signal_type}",
-        )
+        ``request`` is the JSON request payload used for step identity/hashing
+        (the same path tool calls use, with ``kind=llm_call``). ``run`` performs
+        the provider call and returns a JSON-serializable response record.
+        Returns that record — replayed from the log when available, otherwise
+        fresh and newly recorded.
+        """
+        kind = "llm_call"
+        ah = args_hash(request)
+        occ = self._next_occurrence(kind, target, ah)
+        step_id = compute_step_id(self.id, kind, target, ah, occ)
 
-    async def complete(self, output: Any = None) -> None:
-        """Mark the execution as completed. Usually unnecessary — return from the
-        handler instead."""
-        await self._client.submit_intent(
-            execution_id=self.id,
-            session_id=self.session_id,
-            intent_type="complete",
-            output=output,
-        )
+        dec = await self._decide(kind=kind, target=target, args=request, idempotency="safe_to_retry", step_id=step_id)
 
-    async def fail(self, error: str) -> None:
-        """Mark the execution as failed. Usually unnecessary — raise from the
-        handler instead."""
-        await self._client.submit_intent(
-            execution_id=self.id,
-            session_id=self.session_id,
-            intent_type="fail",
-            error=error,
-        )
+        if dec.decision == "replay":
+            if dec.error is not None:
+                raise RebunoError(_error_message(dec.error))
+            return dec.result
+        self._raise_for_decision(dec)
+
+        # proceed: forward to the provider, record the response.
+        try:
+            result = run()
+            if inspect.isawaitable(result):
+                result = await result
+        except (Blocked, Terminated, PolicyError, RateLimited):
+            raise
+        except Exception as e:
+            await self._fail_step_quietly(step_id, e)
+            raise
+        await self._kernel.complete_step(self.id, step_id, result=result)
+        return result
+
+    async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
+        try:
+            await self._kernel.fail_step(self.id, step_id, error={"message": str(error)})
+        except Exception:
+            logger.exception("failed to record step failure for step_id=%s", step_id)
 
 
-_current: ContextVar[ExecutionState | None] = ContextVar("rebuno_execution", default=None)
+def _decision_from_step(step: Step) -> StepDecision:
+    """Mirror the kernel's decision for an already-terminal step, so a hydrated
+    replay is byte-for-byte what ``submit_step`` would have returned.
+
+    Terminal statuses: ``succeeded``/``failed`` replay the recorded result/error;
+    ``denied`` is a policy denial, not a replay. Anything else is unexpected for a
+    terminal-filtered step and is sent back to the kernel via ``proceed``.
+    """
+    if step.status == "succeeded":
+        return StepDecision(decision="replay", result=step.result)
+    if step.status == "failed":
+        return StepDecision(decision="replay", error=step.error)
+    if step.status == "denied":
+        return StepDecision(decision="denied", reason="policy_denied")
+    return StepDecision(decision="proceed")
+
+
+def _error_message(error: Any) -> str:
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("reason") or error)
+    return str(error)
+
+
+_current: ContextVar[ExecutionContext | None] = ContextVar("rebuno_execution", default=None)
 
 
 class _ExecutionProxy:
-    """Module-level accessor that resolves to the current ExecutionState."""
-
     __slots__ = ()
 
-    def _state(self) -> ExecutionState:
+    def _state(self) -> ExecutionContext:
         state = _current.get()
         if state is None:
             raise RuntimeError("execution.* accessed without an active execution context")
@@ -192,7 +206,7 @@ class _ExecutionProxy:
 execution = _ExecutionProxy()
 
 
-def _set_current(state: ExecutionState | None) -> Any:
+def _set_current(state: ExecutionContext | None) -> Any:
     return _current.set(state)
 
 
@@ -200,5 +214,5 @@ def _reset_current(token: Any) -> None:
     _current.reset(token)
 
 
-def _get_current() -> ExecutionState | None:
+def _get_current() -> ExecutionContext | None:
     return _current.get()

@@ -18,18 +18,6 @@ class NetworkError(RebunoError):
         return f"NetworkError({str(self)!r})"
 
 
-class ClientClosedError(RebunoError):
-    """Raised when a request is attempted on a Client whose HTTP transport has been closed.
-
-    Typically indicates that the agent is shutting down and a late in-flight
-    task tried to use the client after ``Client.close()`` ran. Callers running
-    during shutdown should treat this as a clean termination, not an error.
-    """
-
-    def __repr__(self) -> str:
-        return f"ClientClosedError({str(self)!r})"
-
-
 class APIError(RebunoError):
     """Raised when the API returns an error response."""
 
@@ -93,3 +81,60 @@ class ToolError(RebunoError):
 
     def __repr__(self) -> str:
         return f"ToolError(tool_id={self.tool_id!r}, step_id={self.step_id!r})"
+
+
+class StepIDMismatch(APIError):
+    """Kernel rejected the SDK-computed step id (409 step_id_divergence).
+
+    Signals the agent's effect sequence diverged from a prior dispatch
+    (non-determinism not wrapped in rebuno.step) or canonicalization drift.
+    """
+
+
+class RateLimited(RebunoError):
+    """A step was rejected because a policy rate limit was exceeded."""
+
+    def __init__(self, reason: str = "rate_limit_exceeded"):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class Blocked(RebunoError):
+    """Internal control-flow signal: a step is awaiting human approval.
+
+    Raised inside a tool call to unwind the dispatch cleanly; the agent's
+    webhook handler catches it and returns 200 (the execution is already
+    'blocked' in the kernel). Not normally seen by user code.
+    """
+
+    def __init__(self, approval_id: str | None = None):
+        super().__init__("execution blocked awaiting approval")
+        self.approval_id = approval_id
+
+
+class Terminated(RebunoError):
+    """Internal control-flow signal: the execution is terminal (e.g. cancelled).
+
+    Raised inside a kernel call so the dispatch unwinds; the handler returns 200.
+    """
+
+
+_ERROR_BY_CODE: dict[str, type[APIError]] = {
+    "not_found": NotFoundError,
+    "validation_error": ValidationError,
+    "unauthorized": UnauthorizedError,
+    "conflict": APIError,
+    "step_id_divergence": StepIDMismatch,
+}
+
+
+def error_from_response(code: str, message: str, status_code: int, *, rule_id: str = "") -> RebunoError:
+    """Translate a kernel error envelope ({"code", "message"}) into the matching SDK exception.
+
+    Shared by Client and KernelClient so the two HTTP clients can't map the same
+    error code to different exception types.
+    """
+    if code == "policy_denied":
+        return PolicyError(message, rule_id=rule_id)
+    cls = _ERROR_BY_CODE.get(code, APIError)
+    return cls(message, code=code, status_code=status_code)

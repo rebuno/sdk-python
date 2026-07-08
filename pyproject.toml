@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rebuno"
-version = "0.4.8"
+version = "0.5.0"
 description = "Python SDK for the Rebuno execution runtime"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Nathan Wong" },
 ]
@@ -16,6 +16,8 @@ authors = [
 dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
+    "fastapi>=0.139.0",
+    "uvicorn[standard]>=0.51.0",
 ]
 
 [project.urls]
@@ -25,12 +27,8 @@ Documentation = "https://github.com/rebuno/rebuno/blob/main/docs/sdk/python.md"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=9.0",
     "pytest-asyncio>=0.21",
-    "fastmcp>=2.0.0",
-]
-mcp = [
-    "fastmcp>=2.0.0",
 ]
 
 [tool.pytest.ini_options]
@@ -39,7 +37,9 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.12",
+    "ruff>=0.15",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
 ]
 
 [tool.ruff]

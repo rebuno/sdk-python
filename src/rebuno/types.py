@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict
 
 
 class ExecutionStatus(StrEnum):
@@ -16,108 +15,53 @@ class ExecutionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class StepStatus(StrEnum):
-    PENDING = "pending"
-    DISPATCHED = "dispatched"
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    CANCELLED = "cancelled"
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
 
-class Execution(BaseModel):
+class Execution(_Model):
     id: str
-    status: ExecutionStatus
-    agent_id: str
-    labels: dict[str, str] = Field(default_factory=dict)
+    agent_id: str = ""
+    agent_version: str = ""
     input: Any = None
+    status: ExecutionStatus = ExecutionStatus.PENDING
     output: Any = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-    @field_validator("labels", mode="before")
-    @classmethod
-    def _coerce_labels(cls, v: Any) -> dict[str, str]:
-        return v if v is not None else {}
+    failure_reason: str = ""
 
 
-class Event(BaseModel):
-    id: str
-    execution_id: str
-    step_id: str = ""
-    type: str
-    schema_version: int = 1
-    timestamp: datetime | None = None
-    payload: Any = None
-    sequence: int = 0
-    idempotency_key: str = ""
-    causation_id: str = ""
-    correlation_id: str = ""
-
-    @property
-    def tool_id(self) -> str:
-        if isinstance(self.payload, dict):
-            return self.payload.get("tool_id", "")
-        return ""
-
-    @property
-    def arguments(self) -> Any:
-        if isinstance(self.payload, dict):
-            return self.payload.get("arguments")
-        return None
-
-
-class IntentResult(BaseModel):
-    accepted: bool
-    step_id: str = ""
-    error: str = ""
-    pending_approval: bool = False
-
-
-class Job(BaseModel):
-    id: str
-    execution_id: str
+class Step(_Model):
     step_id: str
-    attempt: int = 1
-    tool_id: str
-    tool_version: int = 1
-    arguments: Any = None
-    deadline: datetime | None = None
-
-
-class HistoryEntry(BaseModel):
-    step_id: str
-    tool_id: str
-    status: StepStatus
-    arguments: Any = None
+    execution_id: str = ""
+    kind: str = ""
+    target: str = ""
+    status: str = ""
+    idempotency: str = ""
+    args: Any = None
     result: Any = None
-    error: str = ""
-    completed_at: datetime | None = None
+    error: Any = None
 
 
-class ClaimResult(BaseModel):
-    execution_id: str
-    session_id: str
-    agent_id: str
-    input: Any = None
-    labels: dict[str, str] = Field(default_factory=dict)
-    history: list[HistoryEntry] = Field(default_factory=list)
+class StepDecision(_Model):
+    decision: str
+    result: Any = None
+    error: Any = None
+    approval_id: str | None = None
+    reason: str = ""
 
 
-class ExecutionSummary(BaseModel):
+class Event(_Model):
+    execution_id: str = ""
+    event_seq: int = 0
+    type: str = ""
+    payload: Any = None
+    occurred_at: str = ""
+
+
+class Approval(_Model):
     id: str
-    status: ExecutionStatus
-    agent_id: str
-    labels: dict[str, str] = Field(default_factory=dict)
-    created_at: datetime
-    updated_at: datetime
-
-
-class ListExecutionsResult(BaseModel):
-    executions: list[ExecutionSummary]
-    next_cursor: str = ""
-
-
-class SignalResult(BaseModel):
-    status: str
+    step_id: str = ""
+    execution_id: str = ""
+    status: str = ""
+    message: str = ""
+    decided_by: str = ""
+    rationale: str = ""

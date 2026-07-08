@@ -1,46 +1,55 @@
-from rebuno.errors import APIError, PolicyError, RebunoError, ToolError
+from rebuno.errors import (
+    APIError,
+    Blocked,
+    NotFoundError,
+    PolicyError,
+    RateLimited,
+    RebunoError,
+    StepIDMismatch,
+    Terminated,
+    ToolError,
+    UnauthorizedError,
+    ValidationError,
+    error_from_response,
+)
 
 
-class TestRebunoError:
-    def test_message_and_defaults(self):
-        e = RebunoError("something went wrong")
-        assert str(e) == "something went wrong"
-        assert e.details == {}
+def test_hierarchy():
+    assert issubclass(APIError, RebunoError)
+    assert issubclass(NotFoundError, APIError)
+    assert issubclass(StepIDMismatch, APIError)
+    for cls in (Blocked, Terminated, RateLimited, ToolError, PolicyError):
+        assert issubclass(cls, RebunoError)
 
 
-class TestAPIError:
-    def test_attributes(self):
-        e = APIError(
-            message="not found",
-            code="NOT_FOUND",
-            status_code=404,
-            details={"id": "exec-1"},
-        )
-        assert e.code == "NOT_FOUND"
-        assert e.status_code == 404
-        assert e.details == {"id": "exec-1"}
-
-    def test_str_format(self):
-        e = APIError(message="bad request", code="INVALID", status_code=400)
-        assert str(e) == "[INVALID] bad request (HTTP 400)"
+def test_blocked_carries_approval_id():
+    b = Blocked(approval_id="appr-1")
+    assert b.approval_id == "appr-1"
 
 
-class TestPolicyError:
-    def test_attributes(self):
-        e = PolicyError("denied by policy", rule_id="rule-42")
-        assert e.rule_id == "rule-42"
-        assert e.code == "policy_denied"
-        assert e.status_code == 403
+def test_policy_error_reason():
+    p = PolicyError("nope", rule_id="r1")
+    assert p.rule_id == "r1"
+    assert "nope" in str(p)
 
 
-class TestToolError:
-    def test_attributes(self):
-        e = ToolError(
-            message="execution failed",
-            tool_id="web.search",
-            step_id="step-1",
-            retryable=True,
-        )
-        assert e.tool_id == "web.search"
-        assert e.step_id == "step-1"
-        assert e.retryable is True
+def test_error_from_response_maps_known_codes():
+    assert isinstance(error_from_response("not_found", "x", 404), NotFoundError)
+    assert isinstance(error_from_response("validation_error", "x", 400), ValidationError)
+    assert isinstance(error_from_response("unauthorized", "x", 401), UnauthorizedError)
+    assert isinstance(error_from_response("conflict", "x", 409), APIError)
+    assert isinstance(error_from_response("step_id_divergence", "x", 409), StepIDMismatch)
+
+
+def test_error_from_response_policy_denied_carries_rule_id():
+    err = error_from_response("policy_denied", "nope", 403, rule_id="r1")
+    assert isinstance(err, PolicyError)
+    assert err.rule_id == "r1"
+
+
+def test_error_from_response_unknown_code_falls_back_to_api_error():
+    err = error_from_response("something_new", "weird", 500)
+    assert isinstance(err, APIError)
+    assert not isinstance(err, (NotFoundError, ValidationError, UnauthorizedError, StepIDMismatch))
+    assert err.code == "something_new"
+    assert err.status_code == 500

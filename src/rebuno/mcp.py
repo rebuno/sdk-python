@@ -1,284 +1,107 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
-import logging
-import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from rebuno.errors import PolicyError, RebunoError, ToolError
-from rebuno.execution import _get_current
+from rebuno.tool import wrap_tool
 
-try:
-    import httpx
-    from fastmcp import Client as _FastMCPClient
-    from fastmcp.client.transports import StdioTransport, StreamableHttpTransport
-
-    _HAS_FASTMCP = True
-except ImportError:
-    _FastMCPClient = None  # type: ignore[assignment,misc]
-    StdioTransport = None  # type: ignore[assignment,misc]
-    StreamableHttpTransport = None  # type: ignore[assignment,misc]
-    httpx = None  # type: ignore[assignment]
-    _HAS_FASTMCP = False
+CallFn = Callable[[str, dict[str, Any]], Awaitable[Any]]
+ToResult = Callable[[Any], Any]
 
 
-if _HAS_FASTMCP:
+def wrap_mcp_tools(
+    descriptors: Iterable[Any],
+    *,
+    call: CallFn,
+    prefix: str = "",
+    idempotency: str = "safe_to_retry",
+    to_result: ToResult | None = None,
+) -> list[Callable[..., Any]]:
+    """Wrap a list of MCP tool descriptors (e.g. the output of ``list_tools()``).
 
-    class _CallableHeadersAuth(httpx.Auth):
-        """Resolves a headers callable on every outbound request.
-
-        Lets ``MCPServer(headers=fn)`` pick up rotated tokens without
-        reconnecting.
-        """
-
-        def __init__(self, fn: Callable[[], dict[str, str]]):
-            self._fn = fn
-
-        def auth_flow(self, request):  # type: ignore[no-untyped-def]
-            request.headers.update(self._fn())
-            yield request
-else:
-    _CallableHeadersAuth = None  # type: ignore[assignment,misc]
-
-logger = logging.getLogger("rebuno.mcp")
+    See :func:`wrap_mcp_tool` for the per-tool behaviour and arguments.
+    """
+    return [
+        wrap_mcp_tool(d, call=call, prefix=prefix, idempotency=idempotency, to_result=to_result) for d in descriptors
+    ]
 
 
-HeadersLike = dict[str, str] | Callable[[], dict[str, str]]
-
-
-_REGISTRY: list[MCPServer] = []
-
-
-class MCPServer:
-    """A locally-connected MCP server.
-
-    The agent (or runner) holds the credentials and opens the MCP transport
-    directly. Tool calls route through the kernel for policy/audit but the
-    MCP I/O happens in this process.
-
-    To consume tools that *runners* host (without holding credentials in the
-    agent), use ``rebuno.remote.Tools(prefix)`` instead.
+def wrap_mcp_tool(
+    descriptor: Any,
+    *,
+    call: CallFn,
+    prefix: str = "",
+    idempotency: str = "safe_to_retry",
+    to_result: ToResult | None = None,
+) -> Callable[..., Any]:
+    """Manufacture a Rebuno-routed callable from one MCP tool descriptor.
 
     Args:
-        name: Display name; also the default tool ID prefix.
-        url: HTTP MCP server URL. Mutually exclusive with ``command``.
-        command: Stdio MCP command. Mutually exclusive with ``url``.
-        args: Args for the stdio command.
-        env: Env vars for the stdio subprocess.
-        headers: HTTP headers — dict or zero-arg callable for token refresh.
-        prefix: Tool ID prefix override (defaults to ``name``).
+        descriptor: An MCP tool with ``name``, ``description``, and ``inputSchema``
+            (the spec field names). Attribute or dict access both work, so the
+            official ``mcp`` SDK's ``Tool``, a fastmcp tool, or a plain dict all fit.
+        call: ``call(tool_name, args)`` — your MCP client's invocation, the only
+            seam to the transport. Receives the bare tool name.
+        prefix: Tool-id namespace. The LLM and the kernel both see ``f"{prefix}_{name}"``;
+            only the MCP server (via ``call``) sees the bare ``name``. Empty prefix
+            uses ``name`` as-is.
+        idempotency: ``safe_to_retry`` (default) for reads; ``at_most_once`` for
+            writes that must not re-run on resume.
+        to_result: Maps the raw ``call`` return to a JSON-serializable value before
+            it is recorded. Defaults to flattening standard MCP ``CallToolResult``
+            shapes (structured content, else text blocks).
+
+    Returns:
+        A plain async callable (see :func:`rebuno.wrap_tool`) whose ``__name__`` and
+        kernel target are the prefixed id, with the raw ``inputSchema`` on
+        ``__input_schema__``.
     """
+    name = _field(descriptor, "name")
+    description = _field(descriptor, "description", default="") or ""
+    schema = _field(descriptor, "inputSchema", default=None) or {}
+    tool_id = f"{prefix}_{name}" if prefix else name
 
-    def __init__(
-        self,
-        name: str,
-        *,
-        url: str = "",
-        command: str = "",
-        args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-        headers: HeadersLike | None = None,
-        prefix: str = "",
-    ):
-        if not _HAS_FASTMCP:
-            raise ImportError("fastmcp is required for MCP support. Install with: pip install 'rebuno[mcp]'")
-        if not (url or command):
-            raise ValueError(f"Server '{name}' requires either url or command")
-
-        self.name = name
-        self.prefix = prefix or name
-        self.url = url
-        self.command = command
-        self.args = args or []
-        self.env = env or {}
-        self.headers = headers
-
-        self._tools: list[Callable[..., Any]] | None = None
-        self._client: Any = None
-        self._connected = False
-        self._connect_lock = asyncio.Lock()
-
-        _REGISTRY.append(self)
-
-    @property
-    def tools(self) -> list[Callable[..., Any]]:
-        """List of wrapped callables. Connection is lazy: this triggers connect
-        and discovery on first access.
-        """
-        if self._tools is None:
-            raise RuntimeError(
-                f"MCP server '{self.name}' has not been connected. "
-                "Call await server.connect() or run inside agent.run() (which "
-                "auto-connects all registered MCP servers at startup)."
-            )
-        return self._tools
-
-    async def connect(self) -> None:
-        """Establish the MCP connection and discover tools.
-
-        Idempotent: safe to call multiple times. Called automatically by
-        ``Agent.run()`` for every registered server.
-        """
-        async with self._connect_lock:
-            if self._connected:
-                return
-            self._client = self._build_client()
-            await self._client.__aenter__()
-            raw_tools = await self._client.list_tools()
-            self._tools = [self._wrap_tool(t) for t in raw_tools]
-            self._connected = True
-            logger.info("MCP server connected: %s (%d tools)", self.name, len(self._tools))
-
-    async def disconnect(self) -> None:
-        if self._client is not None and self._connected:
-            try:
-                await self._client.__aexit__(None, None, None)
-            except Exception:
-                logger.debug("Error disconnecting MCP server %s", self.name, exc_info=True)
-        self._client = None
-        self._connected = False
-        self._tools = None
-
-    def _build_client(self) -> Any:
-        if self.url:
-            # Callable headers are resolved per-request via an httpx auth hook,
-            # so rotated tokens are picked up without reconnecting. Static dict
-            # headers are passed through as-is.
-            if callable(self.headers):
-                transport: Any = StreamableHttpTransport(
-                    url=self.url, auth=_CallableHeadersAuth(self.headers)
-                )
-            elif self.headers:
-                transport = StreamableHttpTransport(url=self.url, headers=self.headers)
-            else:
-                transport = self.url
-            return _FastMCPClient(transport)
-        transport = StdioTransport(command=self.command, args=self.args, env=self.env)
-        return _FastMCPClient(transport)
-
-    def _resolve_headers(self) -> dict[str, str]:
-        if callable(self.headers):
-            return self.headers()
-        return self.headers or {}
-
-    def _wrap_tool(self, raw: Any) -> Callable[..., Any]:
-        tool_name = raw.name
-        tool_id = f"{self.prefix}_{tool_name}"
-        description = getattr(raw, "description", "") or ""
-        schema = getattr(raw, "inputSchema", None) or {}
-        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        required = set(schema.get("required", [])) if isinstance(schema, dict) else set()
-
-        params = []
-        for prop_name in props:
-            kind = inspect.Parameter.KEYWORD_ONLY
-            default = inspect.Parameter.empty if prop_name in required else None
-            params.append(inspect.Parameter(prop_name, kind, default=default))
-
-        server = self
-
-        async def wrapper(**kwargs: Any) -> Any:
-            state = _get_current()
-            if state is None:
-                raise RuntimeError(f"MCP tool '{tool_id}' called outside an active execution.")
-            # Strip None values: LLMs often fill optional fields with null,
-            # but MCP servers typically reject null for typed parameters.
-            args = {k: v for k, v in kwargs.items() if v is not None}
-            return await _invoke_mcp(state, server, tool_id, tool_name, args)
-
-        wrapper.__name__ = tool_name
-        wrapper.__doc__ = description
-        wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
-        wrapper.__rebuno_tool_id__ = tool_id  # type: ignore[attr-defined]
-        wrapper.__rebuno_mcp__ = True  # type: ignore[attr-defined]
-        wrapper.__input_schema__ = schema  # type: ignore[attr-defined]
-        return wrapper
-
-
-async def _invoke_mcp(
-    state: Any,
-    server: MCPServer,
-    tool_id: str,
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> Any:
-    """Submit invoke_tool intent, then call the MCP server, then report result."""
-    idempotency_key = f"{state.id}:{tool_id}:{uuid.uuid4().hex[:8]}"
-    intent_result = await state._client.submit_intent(
-        execution_id=state.id,
-        session_id=state.session_id,
-        intent_type="invoke_tool",
-        tool_id=tool_id,
-        arguments=arguments,
-        idempotency_key=idempotency_key,
-        remote=False,
+    return wrap_tool(
+        tool_id,
+        lambda args: call(name, args),  # the wire call uses the bare name
+        description=description,
+        args_schema=schema,
+        idempotency=idempotency,
+        to_result=to_result if to_result is not None else _default_flatten,
+        transform_args=_strip_none,
     )
-    if not intent_result.accepted:
-        raise PolicyError(intent_result.error or "Intent denied by policy")
-    if not intent_result.step_id:
-        raise RebunoError("No step_id returned for MCP invoke_tool intent")
-
-    step_id = intent_result.step_id
-    if intent_result.pending_approval:
-        approval = await state._wait(
-            "approval",
-            step_id,
-            f"Timed out waiting for approval (step_id={step_id})",
-        )
-        if not approval.get("approved", False):
-            raise PolicyError("Tool invocation denied by human approval")
-
-    try:
-        raw = await server._client.call_tool(tool_name, arguments)
-        output = _flatten_mcp_result(raw)
-    except Exception as e:
-        await state._client.report_step_result(
-            execution_id=state.id,
-            session_id=state.session_id,
-            step_id=step_id,
-            success=False,
-            error=str(e),
-        )
-        raise ToolError(message=str(e), tool_id=tool_id, step_id=step_id) from e
-
-    await state._client.report_step_result(
-        execution_id=state.id,
-        session_id=state.session_id,
-        step_id=step_id,
-        success=True,
-        data=output,
-    )
-    return output
 
 
-def _flatten_mcp_result(result: Any) -> str:
-    content = getattr(result, "content", None)
-    if content is None:
-        return str(result)
-    texts = [item.text if getattr(item, "type", None) == "text" else str(item) for item in content]
-    return texts[0] if len(texts) == 1 else "\n".join(texts)
+def _field(descriptor: Any, key: str, *, default: Any = None) -> Any:
+    """Read ``key`` from a descriptor by attribute, falling back to dict access."""
+    if isinstance(descriptor, dict):
+        return descriptor.get(key, default)
+    return getattr(descriptor, key, default)
 
 
-async def connect_all() -> None:
-    """Connect every registered MCP server. Used by Agent.run() startup."""
-    for server in _REGISTRY:
-        try:
-            await server.connect()
-        except Exception:
-            logger.warning("MCP server %s failed to connect; will retry lazily", server.name, exc_info=True)
+def _strip_none(args: dict[str, Any]) -> dict[str, Any]:
+    """Drop null-valued args: LLMs often fill optional fields with null, but MCP
+    servers typically reject null for typed parameters."""
+    return {k: v for k, v in args.items() if v is not None}
 
 
-async def disconnect_all() -> None:
-    for server in _REGISTRY:
-        await server.disconnect()
+def _default_flatten(raw: Any) -> Any:
+    """Flatten a standard MCP ``CallToolResult`` to a JSON-serializable value.
 
+    Prefers structured content (``structured_content`` in fastmcp,
+    ``structuredContent`` in the official SDK). Otherwise joins text content
+    blocks. A value that is neither (already a dict/str the caller flattened
+    itself) is passed through unchanged.
+    """
+    structured = getattr(raw, "structured_content", None)
+    if structured is None:
+        structured = getattr(raw, "structuredContent", None)
+    if structured is not None:
+        return structured
 
-def all_servers() -> list[MCPServer]:
-    return list(_REGISTRY)
+    content = getattr(raw, "content", None)
+    if content is not None:
+        texts = [b.text if getattr(b, "type", None) == "text" else str(b) for b in content]
+        return texts[0] if len(texts) == 1 else "\n".join(texts)
 
-
-def _clear_registry() -> None:
-    """Test helper. Do not use in production."""
-    _REGISTRY.clear()
+    return raw
