@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 import logging
 from collections.abc import Callable
@@ -52,6 +54,34 @@ class ExecutionContext:
         return await self._kernel.submit_step(
             self.id, kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id
         )
+
+    async def _run_with_heartbeat(self, run: Callable[[], Any], interval: float = 30.0) -> Any:
+        """Run an effect body while a background task renews the dispatch lease, so a
+        long-running but live body isn't reclaimed and double-invoked mid-step.
+
+        The body must yield to the event loop (be async / await something) for the
+        heartbeat to fire — a fully blocking sync body starves it. All the long
+        effects here (LLM/provider calls, MCP tools) are I/O-bound and async, so
+        this holds; wrap CPU-bound sync work in a thread if it ever doesn't.
+        """
+        hb = asyncio.create_task(self._heartbeat_loop(interval))
+        try:
+            result = run()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        finally:
+            hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hb
+
+    async def _heartbeat_loop(self, interval: float) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._kernel.heartbeat(self.id)
+            except Exception:
+                logger.warning("dispatch heartbeat failed", exc_info=True)
 
     def _next_occurrence(self, kind: str, target: str, ah: str) -> int:
         key = (kind, target, ah)
@@ -108,9 +138,7 @@ class ExecutionContext:
             await self._kernel.complete_step(self.id, step_id, result=None)
             return None
         try:
-            result = run()
-            if inspect.isawaitable(result):
-                result = await result
+            result = await self._run_with_heartbeat(run)
         except (Blocked, Terminated, PolicyError, RateLimited):
             raise
         except Exception as e:
@@ -146,9 +174,7 @@ class ExecutionContext:
 
         # proceed: forward to the provider, record the response.
         try:
-            result = run()
-            if inspect.isawaitable(result):
-                result = await result
+            result = await self._run_with_heartbeat(run)
         except (Blocked, Terminated, PolicyError, RateLimited):
             raise
         except Exception as e:

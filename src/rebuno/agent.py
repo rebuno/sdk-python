@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -48,6 +49,7 @@ class Agent:
         self._kernel = KernelClient(agent_id=agent_id, secret=self.secret, http=self._http)
         self._app: FastAPI | None = None
         self._closed = False
+        self._tasks: set[asyncio.Task] = set()
 
     def bind(self, process: Callable[..., Any]) -> None:
         self._process = process
@@ -81,14 +83,10 @@ class Agent:
             execution_id = (payload or {}).get("execution_id")
             if not execution_id:
                 return Response(status_code=400)
-            try:
-                await self._handle(execution_id)
-                return Response(status_code=200)
-            except (Blocked, Terminated):
-                return Response(status_code=200)
-            except Exception:
-                logger.exception("internal error handling execution %s", execution_id)
-                return Response(status_code=500)
+            task = asyncio.create_task(self._safe_handle(execution_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            return Response(status_code=200)
 
         return app
 
@@ -138,10 +136,33 @@ class Agent:
         finally:
             _reset_current(token)
 
+    async def _safe_handle(self, execution_id: str) -> None:
+        try:
+            await self._handle(execution_id)
+        except (Blocked, Terminated):
+            pass
+        except Exception:
+            logger.exception("unhandled error handling execution %s", execution_id)
+
+    async def join(self) -> None:
+        """Wait for all in-flight execution handlers to finish (best-effort)."""
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            self._tasks.clear()
+
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            try:
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+            except Exception:
+                logger.debug("ignoring task cleanup error during close", exc_info=True)
+            self._tasks.clear()
         try:
             await self._http.aclose()
         except RuntimeError:
@@ -151,8 +172,6 @@ class Agent:
 
     def run(self, process: Callable[..., Any], *, host: str = "0.0.0.0", port: int = 5000) -> None:
         """Bind the process and serve the webhook app with uvicorn (blocking)."""
-        import asyncio
-
         import uvicorn
 
         self.bind(process)

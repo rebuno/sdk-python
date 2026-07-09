@@ -94,6 +94,10 @@ class KernelClient:
         body = json.dumps({"error": error}).encode("utf-8")
         await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/fail", body)
 
+    async def heartbeat(self, execution_id: str) -> None:
+        """Renew the dispatch lease while a long effect body runs (empty signed body)."""
+        await self._send("POST", f"/v0/executions/{execution_id}/heartbeat", b"")
+
     async def complete_execution(self, execution_id: str, *, output: Any) -> None:
         body = json.dumps({"output": output}).encode("utf-8")
         await self._send("POST", f"/v0/executions/{execution_id}/complete", body)

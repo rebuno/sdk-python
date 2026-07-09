@@ -3,7 +3,7 @@ import hmac
 import json
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from rebuno.agent import Agent
 
@@ -34,7 +34,7 @@ class FakeKernel:
 
 def build(agent, kernel):
     agent._kernel = kernel  # inject fake
-    return TestClient(agent.app)
+    return AsyncClient(transport=ASGITransport(app=agent.app), base_url="http://test")
 
 
 def webhook_body(execution_id="e1", dispatch_id="d1") -> bytes:
@@ -45,27 +45,28 @@ async def _process_ok(prompt: str):
     return {"answer": prompt.upper()}
 
 
-def test_invalid_signature_401():
+async def test_invalid_signature_401():
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(_process_ok)
-    client = build(agent, FakeKernel({"prompt": "hi"}))
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": "sha256=bad"})
-    assert r.status_code == 401
+    async with build(agent, FakeKernel({"prompt": "hi"})) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": "sha256=bad"})
+        assert r.status_code == 401
 
 
-def test_completes_execution():
+async def test_completes_execution():
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(_process_ok)
     k = FakeKernel({"prompt": "hi"})
-    client = build(agent, k)
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-    assert r.status_code == 200
-    assert k.completed == {"answer": "HI"}
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed == {"answer": "HI"}
 
 
-def test_blocked_returns_200_without_complete():
+async def test_blocked_returns_200_without_complete():
     from rebuno.errors import Blocked
 
     async def proc(prompt: str):
@@ -74,28 +75,30 @@ def test_blocked_returns_200_without_complete():
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
-    client = build(agent, k)
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-    assert r.status_code == 200
-    assert k.completed is None
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed is None
 
 
-def test_process_exception_fails_execution():
+async def test_process_exception_fails_execution():
     async def proc(prompt: str):
         raise ValueError("boom")
 
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
-    client = build(agent, k)
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-    assert r.status_code == 200
-    assert k.failed and "boom" in k.failed
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed and "boom" in k.failed
 
 
-def test_rate_limited_fails_execution_cleanly():
+async def test_rate_limited_fails_execution_cleanly():
     from rebuno.errors import RateLimited
 
     async def proc(prompt: str):
@@ -104,14 +107,15 @@ def test_rate_limited_fails_execution_cleanly():
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
-    client = build(agent, k)
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-    assert r.status_code == 200
-    assert k.failed and "rate_limit_exceeded" in k.failed
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed and "rate_limit_exceeded" in k.failed
 
 
-def test_step_id_mismatch_fails_execution_cleanly():
+async def test_step_id_mismatch_fails_execution_cleanly():
     from rebuno.errors import StepIDMismatch
 
     async def proc(prompt: str):
@@ -120,11 +124,12 @@ def test_step_id_mismatch_fails_execution_cleanly():
     agent = Agent("a", secret=SECRET, kernel_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
-    client = build(agent, k)
-    body = webhook_body()
-    r = client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-    assert r.status_code == 200
-    assert k.failed and "step id divergence" in k.failed
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed and "step id divergence" in k.failed
 
 
 def test_empty_secret_raises(monkeypatch):
