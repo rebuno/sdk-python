@@ -18,19 +18,6 @@ again. The SDK gives you three ways to record an effect:
 pip install rebuno
 ```
 
-## Quick start (create an execution)
-
-```python
-from rebuno import Client
-
-client = Client(base_url="http://localhost:8080")
-execution = await client.create("dev-agent", input={"prompt": "hello"})
-print(execution.id)
-```
-
-`Client` falls back to the `REBUNO_URL` and `REBUNO_API_KEY` environment variables
-when `base_url` / `api_key` are omitted.
-
 ## Building an agent
 
 ```python
@@ -121,7 +108,7 @@ passthrough. Two current limits: streaming responses (`stream=True`) are passed
 through un-recorded (you'll get a warning), and non-JSON request bodies aren't
 recognized as LLM calls.
 
-## Durable local work — `rebuno.step()`
+## Durable local work
 
 Wrap non-deterministic local computation — the current time, random choices, fresh
 ids — so its result is recorded once and replays identically on resume:
@@ -131,6 +118,47 @@ from rebuno import step
 
 chosen = await step("pick_winner", random.choice, args={"candidates": candidates})
 ```
+
+## Building a client
+
+Clients are used to create executions and inspect what they did. It talks to the kernel's client/admin
+routes with Bearer auth.
+
+```python
+from rebuno import Client
+
+client = Client(base_url="http://localhost:8080", api_key="...")
+```
+
+`base_url` and `api_key` fall back to the `REBUNO_URL` and `REBUNO_API_KEY`
+environment variables when omitted; `base_url` is required one way or the other.
+Pass `timeout=` to override the default 35s. `Client` is an async context
+manager, so it closes its connection pool for you:
+
+```python
+async with Client() as client:
+    execution = await client.create("dev-agent", input={"prompt": "hello"})
+    ...
+```
+
+Otherwise call `await client.close()` when you're done.
+
+What you can do with it:
+
+```python
+# executions
+execution = await client.create("dev-agent", input={"prompt": "hello"})
+execution = await client.get(execution.id)
+await client.cancel(execution.id)
+
+# what an execution did (event log and steps)
+events = await client.events(execution.id, after_seq=0, limit=100)
+steps = await client.list_steps(execution.id, status="pending")
+step = await client.get_step(execution.id, step_id)
+```
+
+Failed requests raise typed errors (`NotFoundError`, `UnauthorizedError`,
+`PolicyError`, `NetworkError`, …) — all subclasses of `rebuno.RebunoError`.
 
 ## Human-in-the-loop / approvals
 
