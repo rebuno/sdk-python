@@ -1,19 +1,16 @@
 # Rebuno Python SDK
 
-Durable execution for agents, on any framework. Rebuno gives your agent crash-safe,
-resumable runs without changing how you build it: write a normal async handler, wrap
-the side effects you want recorded, and the kernel takes care of retries, replay, and
-human-in-the-loop approvals.
+Rebuno gives your agents durable execution (crash and resume without re-running side effects), an event-sourced record of everything they did, and optional governance over what they're allowed to do.
 
-The SDK is built around three primitives:
+Durability works by recording every non-deterministic effect your handler
+produces, so a resumed run replays the recorded result instead of doing the work
+again. The SDK gives you three ways to record an effect:
 
 - `@rebuno.tool` — mark an async function as a durable tool call
-- `rebuno.Agent(agent_id).run(process)` — receive webhook dispatches from the kernel
-  and run your handler per execution
+- `rebuno.http_client()` — an `httpx` client that records LLM calls as durable
+  steps (drop it into your OpenAI/Anthropic client)
 - `rebuno.step()` — record non-deterministic local work (time, randomness, ids) so it
   replays identically
-
-The SDK is async-only.
 
 ## Installation
 
@@ -96,6 +93,33 @@ loop:
 async def render(doc: str) -> bytes:
     return await asyncio.to_thread(render_sync, doc)
 ```
+
+## Durable LLM calls
+
+LLM calls are the most expensive and least deterministic thing an agent does, so
+Rebuno records them too — without you rewriting how you call the model.
+`http_client()` returns an `httpx.AsyncClient` you hand to your provider's async
+client:
+
+```python
+from openai import AsyncOpenAI
+import rebuno
+
+llm = AsyncOpenAI(http_client=rebuno.http_client())
+```
+
+It works as an httpx transport that sits under the provider SDK: on the first
+run it forwards the request to the provider and records the response as a durable
+step (`kind=llm_call`, the same machinery as tool calls); on resume it replays
+the recorded response instead of calling — and paying for — the model again. The
+request's model field is used as the step target; pass `model_field=...` if your
+provider names it differently. Extra kwargs (e.g. `timeout`) are forwarded to
+`httpx.AsyncClient`.
+
+Recording only happens inside an execution — outside one, the client is a plain
+passthrough. Two current limits: streaming responses (`stream=True`) are passed
+through un-recorded (you'll get a warning), and non-JSON request bodies aren't
+recognized as LLM calls.
 
 ## Durable local work — `rebuno.step()`
 
