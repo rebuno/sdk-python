@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from rebuno.errors import NetworkError, error_from_response
-from rebuno.types import Approval, Event, Execution
+from rebuno.types import Approval, Event, Execution, Step
 
 USER_AGENT = "rebuno-python-sdk"
 
@@ -79,6 +79,18 @@ class Client:
 
     async def cancel(self, execution_id: str) -> None:
         await self._request("POST", f"/v0/executions/{execution_id}/cancel")
+
+    async def get_step(self, execution_id: str, step_id: str) -> Step:
+        resp = await self._request("GET", f"/v0/executions/{execution_id}/steps/{step_id}")
+        return Step.model_validate(resp.json())
+
+    async def list_steps(self, execution_id: str, *, status: str = "") -> list[Step]:
+        params: dict[str, Any] = {}
+        if status:
+            params["status"] = status
+        resp = await self._request("GET", f"/v0/executions/{execution_id}/steps", params=params)
+        data = resp.json()
+        return [Step.model_validate(s) for s in (data or [])]
 
     async def list_approvals(self, *, status: str = "pending") -> list[Approval]:
         resp = await self._request("GET", "/v0/approvals", params={"status": status})
