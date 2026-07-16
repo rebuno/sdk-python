@@ -17,6 +17,7 @@ from rebuno.client import Client
 from rebuno.errors import (
     APIError,
     Blocked,
+    ForbiddenError,
     NetworkError,
     NotFoundError,
     PolicyError,
@@ -50,6 +51,7 @@ __all__ = [
     "NetworkError",
     "NotFoundError",
     "UnauthorizedError",
+    "ForbiddenError",
     "ValidationError",
     "StepIDMismatch",
     "RateLimited",

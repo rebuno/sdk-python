@@ -47,6 +47,10 @@ class UnauthorizedError(APIError):
     """Raised when authentication fails (401)."""
 
 
+class ForbiddenError(APIError):
+    """Raised when a decision is refused (403 forbidden)."""
+
+
 class NotFoundError(APIError):
     """Raised when a resource is not found (404)."""
 
@@ -123,6 +127,7 @@ _ERROR_BY_CODE: dict[str, type[APIError]] = {
     "not_found": NotFoundError,
     "validation_error": ValidationError,
     "unauthorized": UnauthorizedError,
+    "forbidden": ForbiddenError,
     "conflict": APIError,
     "step_id_divergence": StepIDMismatch,
 }
