@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rebuno"
-version = "0.5.1"
+version = "0.6.0"
 description = "Python SDK for Rebuno"
 readme = "README.md"
 license = "MIT"
