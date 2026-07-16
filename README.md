@@ -34,7 +34,7 @@ async def process(prompt: str) -> dict:
     return {"answer": hits}
 
 
-agent = Agent("dev-agent", secret="dev-secret", kernel_url="http://localhost:8080")
+agent = Agent("dev-agent", secret="dev-secret", base_url="http://localhost:8080")
 agent.run(process, port=5000)
 ```
 

@@ -29,7 +29,7 @@ class Agent:
         agent_id: str,
         *,
         secret: str | None = None,
-        kernel_url: str | None = None,
+        base_url: str | None = None,
         webhook_path: str = "/webhook",
         kernel_timeout: float = 35.0,
     ):
@@ -39,13 +39,13 @@ class Agent:
         self.secret = secret if secret is not None else os.environ.get("REBUNO_AGENT_SECRET", "")
         if not self.secret:
             raise ValueError("secret required (set REBUNO_AGENT_SECRET or pass secret=)")
-        self.kernel_url = (kernel_url or os.environ.get("REBUNO_URL", "")).rstrip("/")
-        if not self.kernel_url:
-            raise ValueError("kernel_url required (set REBUNO_URL or pass kernel_url=)")
+        self.base_url = (base_url or os.environ.get("REBUNO_URL", "")).rstrip("/")
+        if not self.base_url:
+            raise ValueError("base_url required (set REBUNO_URL or pass base_url=)")
         self.webhook_path = webhook_path
         self._process: Callable[..., Any] | None = None
         self._binder: InputBinder | None = None
-        self._http = httpx.AsyncClient(base_url=self.kernel_url, timeout=kernel_timeout)
+        self._http = httpx.AsyncClient(base_url=self.base_url, timeout=kernel_timeout)
         self._kernel = KernelClient(agent_id=agent_id, secret=self.secret, http=self._http)
         self._app: FastAPI | None = None
         self._closed = False
