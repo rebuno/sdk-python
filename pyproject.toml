@@ -23,7 +23,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/rebuno/sdk-python"
 Repository = "https://github.com/rebuno/sdk-python"
-Documentation = "https://github.com/rebuno/rebuno/blob/main/docs/sdk/python.md"
+Documentation = "https://github.com/rebuno/rebuno/tree/main/docs/sdk/python"
 
 [project.optional-dependencies]
 dev = [
