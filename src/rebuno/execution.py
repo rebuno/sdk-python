@@ -25,6 +25,7 @@ class ExecutionContext:
         self.input = input
         self.status = status
         self._occurrences: dict[tuple[str, str, str], int] = {}
+        self._submit_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._replay: dict[str, Step] | None = None
 
     async def hydrate(self) -> None:
@@ -89,6 +90,22 @@ class ExecutionContext:
         self._occurrences[key] = n + 1
         return n
 
+    async def _submit(self, *, kind: str, target: str, args: Any, idempotency: str) -> tuple[str, StepDecision]:
+        """Assign the occurrence and run the submit handshake under a per-effect-identity
+        lock, so concurrent *identical* (kind, target, args) effects submit in a defined
+        order.
+        """
+        ah = args_hash(args)
+        key = (kind, target, ah)
+        lock = self._submit_locks.get(key)
+        if lock is None:
+            lock = self._submit_locks[key] = asyncio.Lock()
+        async with lock:
+            occ = self._next_occurrence(kind, target, ah)
+            step_id = compute_step_id(self.id, kind, target, ah, occ)
+            dec = await self._decide(kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id)
+        return step_id, dec
+
     def _raise_for_decision(self, dec: StepDecision) -> None:
         """Map a non-proceed step decision to its control-flow exception.
 
@@ -121,11 +138,7 @@ class ExecutionContext:
         used for step identity/hashing, not ``run``'s call signature.
         """
         kind = "tool_call"
-        ah = args_hash(args)
-        occ = self._next_occurrence(kind, target, ah)
-        step_id = compute_step_id(self.id, kind, target, ah, occ)
-
-        dec = await self._decide(kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id)
+        step_id, dec = await self._submit(kind=kind, target=target, args=args, idempotency=idempotency)
 
         if dec.decision == "replay":
             if dec.error is not None:
@@ -160,11 +173,7 @@ class ExecutionContext:
         fresh and newly recorded.
         """
         kind = "llm_call"
-        ah = args_hash(request)
-        occ = self._next_occurrence(kind, target, ah)
-        step_id = compute_step_id(self.id, kind, target, ah, occ)
-
-        dec = await self._decide(kind=kind, target=target, args=request, idempotency="safe_to_retry", step_id=step_id)
+        step_id, dec = await self._submit(kind=kind, target=target, args=request, idempotency="safe_to_retry")
 
         if dec.decision == "replay":
             if dec.error is not None:
