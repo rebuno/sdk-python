@@ -62,6 +62,15 @@ async def test_complete_step_posts_result(client, captured):
     assert captured["request"].headers["Rebuno-Signature"] == _sig(captured["body"])
 
 
+async def test_stream_delta_posts_seq_and_data(client, captured):
+    await client.stream_delta("e1", "sid123", seq=4, data="tok")
+    body = json.loads(captured["body"])
+    assert body == {"seq": 4, "data": "tok"}
+    req = captured["request"]
+    assert req.url.path == "/v0/executions/e1/steps/sid123/stream"
+    assert req.headers["Rebuno-Signature"] == _sig(captured["body"])
+
+
 async def test_step_id_divergence_maps_to_step_id_mismatch():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(409, json={"code": "step_id_divergence", "message": "mismatch"})

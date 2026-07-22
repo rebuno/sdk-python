@@ -94,6 +94,10 @@ class KernelClient:
         body = json.dumps({"error": error}).encode("utf-8")
         await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/fail", body)
 
+    async def stream_delta(self, execution_id: str, step_id: str, *, seq: int, data: str) -> None:
+        body = json.dumps({"seq": seq, "data": data}).encode("utf-8")
+        await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/stream", body)
+
     async def heartbeat(self, execution_id: str) -> None:
         """Renew the dispatch lease while a long effect body runs (empty signed body)."""
         await self._send("POST", f"/v0/executions/{execution_id}/heartbeat", b"")

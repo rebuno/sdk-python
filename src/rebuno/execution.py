@@ -162,35 +162,52 @@ class ExecutionContext:
         await self._kernel.complete_step(self.id, step_id, result=result)
         return result
 
-    async def invoke_llm(self, target: str, request: Any, *, run: Callable[[], Any]) -> Any:
-        """Submit an ``llm_call`` step; replay the recorded response or run the
-        provider call and record it.
+    async def begin_llm(self, target: str, request: Any) -> tuple[str, StepDecision]:
+        """Submit an ``llm_call`` step and return ``(step_id, decision)``.
 
-        ``request`` is the JSON request payload used for step identity/hashing
-        (the same path tool calls use, with ``kind=llm_call``). ``run`` performs
-        the provider call and returns a JSON-serializable response record.
-        Returns that record — replayed from the log when available, otherwise
-        fresh and newly recorded.
+        The decision is ``proceed`` (run the provider call and record it via
+        :meth:`record_llm`) or ``replay`` (rebuild the response from
+        ``decision.result``). Any other decision raises the matching control-flow
+        error.
         """
-        kind = "llm_call"
-        step_id, dec = await self._submit(kind=kind, target=target, args=request, idempotency="safe_to_retry")
-
+        step_id, dec = await self._submit(
+            kind="llm_call", target=target, args=request, idempotency="safe_to_retry"
+        )
         if dec.decision == "replay":
             if dec.error is not None:
                 raise RebunoError(_error_message(dec.error))
-            return dec.result
+            return step_id, dec
         self._raise_for_decision(dec)
+        return step_id, dec
 
-        # proceed: forward to the provider, record the response.
+    async def publish_llm_delta(self, step_id: str, seq: int, data: str) -> None:
+        """Publish a live delta for an in-flight streamed step. Best-effort:
+        failures are logged and swallowed."""
         try:
-            result = await self._run_with_heartbeat(run)
-        except (Blocked, Terminated, PolicyError, RateLimited):
-            raise
-        except Exception as e:
-            await self._fail_step_quietly(step_id, e)
-            raise
+            await self._kernel.stream_delta(self.id, step_id, seq=seq, data=data)
+        except Exception:
+            logger.debug("stream delta publish failed for step_id=%s", step_id, exc_info=True)
+
+    async def record_llm(self, step_id: str, result: Any) -> None:
+        """Record the assembled streamed response as the step's durable result."""
         await self._kernel.complete_step(self.id, step_id, result=result)
-        return result
+
+    def start_heartbeat(self, interval: float = 30.0) -> asyncio.Task:
+        """Start a background lease-renewal task and return it. The caller must
+        cancel it when the effect finishes."""
+        return asyncio.create_task(self._heartbeat_loop(interval))
+
+    @contextlib.asynccontextmanager
+    async def lease(self, interval: float = 30.0):
+        """Renew the dispatch lease for the duration of a long effect body so it
+        isn't reclaimed and double-invoked mid-flight."""
+        hb = self.start_heartbeat(interval)
+        try:
+            yield
+        finally:
+            hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hb
 
     async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
         try:
