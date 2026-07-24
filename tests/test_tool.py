@@ -14,7 +14,7 @@ class FakeKernel:
         self.decision = decision
         self.completed = []
 
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
         self.captured = dict(kind=kind, target=target, args=args, idempotency=idempotency)
         return self.decision
 
@@ -39,7 +39,7 @@ async def variadic(a: int, *rest: int, **opts: Any) -> dict:
 
 async def test_tool_runs_under_context_and_binds_args():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await search("hi")
     finally:
@@ -51,7 +51,7 @@ async def test_tool_runs_under_context_and_binds_args():
 
 async def test_tool_id_and_idempotency_override():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         await danger(1)
     finally:
@@ -67,7 +67,7 @@ async def test_tool_outside_context_raises():
 
 async def test_tool_variadic_args_expand_correctly():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await variadic(1, 2, 3, x=9)
     finally:
@@ -85,7 +85,7 @@ _SCHEMA = {
 
 
 def _ctx(kernel):
-    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", agent_id="a", input=None))
+    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
 
 
 async def test_wrap_tool_uses_name_verbatim_as_target():

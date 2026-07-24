@@ -8,7 +8,7 @@ class FakeKernel:
         self.decision = decision
         self.completed = []
 
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
         self.captured = dict(target=target, args=args, idempotency=idempotency)
         return self.decision
 
@@ -18,7 +18,7 @@ class FakeKernel:
 
 async def test_step_records_local_work():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await step("pick_id", lambda: 42)
     finally:
@@ -31,7 +31,7 @@ async def test_step_records_local_work():
 
 async def test_step_replays():
     k = FakeKernel(StepDecision(decision="replay", result=7))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await step("pick_id", lambda: 999)
     finally:
@@ -41,7 +41,7 @@ async def test_step_replays():
 
 async def test_step_forwards_idempotency():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         await step("send_email", lambda: "ok", idempotency="at_most_once")
     finally:
@@ -51,7 +51,7 @@ async def test_step_forwards_idempotency():
 
 async def test_step_defaults_idempotency_to_safe_to_retry():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         await step("now", lambda: 0)
     finally:
@@ -61,7 +61,7 @@ async def test_step_defaults_idempotency_to_safe_to_retry():
 
 async def test_step_records_args_dict():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await step("pick", lambda n: n * 2, args={"n": 21})
     finally:
@@ -74,7 +74,7 @@ async def test_step_handles_arg_named_name():
     # A tool whose argument is literally `name` must not collide with step()'s
     # own `name` parameter now that args are passed as a dict.
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", agent_id="a", input=None))
+    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
     try:
         out = await step("greet", lambda name: f"Hello, {name}", args={"name": "World"})
     finally:

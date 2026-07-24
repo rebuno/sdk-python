@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from rebuno._kernel import KernelClient
-from rebuno.errors import APIError, StepIDMismatch
+from rebuno.errors import APIError
 from rebuno.types import StepDecision
 
 SECRET = "dev-secret"
@@ -28,7 +28,7 @@ def client(captured):
         captured["request"] = request
         captured["body"] = request.content
         if request.url.path.endswith("/steps"):
-            return httpx.Response(200, json={"decision": "proceed"})
+            return httpx.Response(200, json={"decision": "proceed", "step_id": "sid123"})
         return httpx.Response(200, json={"decision": "recorded"})
 
     transport = httpx.MockTransport(handler)
@@ -36,23 +36,24 @@ def client(captured):
     return KernelClient(agent_id=AGENT, secret=SECRET, http=http)
 
 
-async def test_submit_step_signs_and_embeds_canonical_args(client, captured):
+async def test_submit_step_sends_dispatch_and_returns_kernel_step_id(client, captured):
     dec = await client.submit_step(
         "e1",
+        dispatch_id="d1",
         kind="tool_call",
         target="t",
         args={"b": 2, "a": 1},
         idempotency="safe_to_retry",
-        step_id="sid123",
     )
     assert isinstance(dec, StepDecision)
+    assert dec.step_id == "sid123"
     req = captured["request"]
     body = captured["body"]
     assert req.headers["Rebuno-Agent-Id"] == AGENT
-    assert req.headers["Rebuno-Step-Id"] == "sid123"
+    assert req.headers["Rebuno-Dispatch-Id"] == "d1"
     assert req.headers["Rebuno-Signature"] == _sig(body)
-    # canonical args embedded verbatim (sorted keys, compact)
-    assert b'"args":{"a":1,"b":2}' in body
+    # Args go as plain JSON — the kernel canonicalizes what it receives before hashing.
+    assert json.loads(body)["args"] == {"b": 2, "a": 1}
 
 
 async def test_complete_step_posts_result(client, captured):
@@ -69,16 +70,6 @@ async def test_stream_delta_posts_seq_and_data(client, captured):
     req = captured["request"]
     assert req.url.path == "/v0/executions/e1/steps/sid123/stream"
     assert req.headers["Rebuno-Signature"] == _sig(captured["body"])
-
-
-async def test_step_id_divergence_maps_to_step_id_mismatch():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(409, json={"code": "step_id_divergence", "message": "mismatch"})
-
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://k")
-    client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
-    with pytest.raises(StepIDMismatch):
-        await client.get_execution("e1")
 
 
 async def test_conflict_maps_to_api_error():

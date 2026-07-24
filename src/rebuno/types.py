@@ -34,6 +34,8 @@ class Step(_Model):
     execution_id: str = ""
     kind: str = ""
     target: str = ""
+    args_hash: str = ""
+    occurrence: int = 0
     status: str = ""
     idempotency: str = ""
     args: Any = None
@@ -43,6 +45,7 @@ class Step(_Model):
 
 class StepDecision(_Model):
     decision: str
+    step_id: str = ""
     result: Any = None
     error: Any = None
     approval_id: str | None = None

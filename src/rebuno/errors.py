@@ -87,14 +87,6 @@ class ToolError(RebunoError):
         return f"ToolError(tool_id={self.tool_id!r}, step_id={self.step_id!r})"
 
 
-class StepIDMismatch(APIError):
-    """Kernel rejected the SDK-computed step id (409 step_id_divergence).
-
-    Signals the agent's effect sequence diverged from a prior dispatch
-    (non-determinism not wrapped in rebuno.step) or canonicalization drift.
-    """
-
-
 class RateLimited(RebunoError):
     """A step was rejected because a policy rate limit was exceeded."""
 
@@ -129,7 +121,6 @@ _ERROR_BY_CODE: dict[str, type[APIError]] = {
     "unauthorized": UnauthorizedError,
     "forbidden": ForbiddenError,
     "conflict": APIError,
-    "step_id_divergence": StepIDMismatch,
 }
 
 

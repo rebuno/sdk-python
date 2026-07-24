@@ -115,23 +115,6 @@ async def test_rate_limited_fails_execution_cleanly():
         assert k.failed and "rate_limit_exceeded" in k.failed
 
 
-async def test_step_id_mismatch_fails_execution_cleanly():
-    from rebuno.errors import StepIDMismatch
-
-    async def proc(prompt: str):
-        raise StepIDMismatch("step id divergence", code="step_id_divergence", status_code=409)
-
-    agent = Agent("a", secret=SECRET, base_url="http://k")
-    agent.bind(proc)
-    k = FakeKernel({"prompt": "hi"})
-    async with build(agent, k) as client:
-        body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
-        assert r.status_code == 200
-        await agent.join()
-        assert k.failed and "step id divergence" in k.failed
-
-
 def test_empty_secret_raises(monkeypatch):
     monkeypatch.delenv("REBUNO_AGENT_SECRET", raising=False)
     with pytest.raises(ValueError):
@@ -148,3 +131,33 @@ def test_default_kernel_timeout_applied():
 def test_custom_kernel_timeout_applied():
     agent = Agent("a", secret=SECRET, base_url="http://k", kernel_timeout=5.0)
     assert agent._http.timeout.connect == 5.0
+
+
+async def test_webhook_without_dispatch_id_is_rejected():
+    """Every effect this run submits must carry the dispatch it was sent under, so
+    a payload missing one is unusable rather than silently degraded."""
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(_process_ok)
+    async with build(agent, FakeKernel({"prompt": "hi"})) as client:
+        body = json.dumps({"execution_id": "e1"}).encode()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 400
+
+
+async def test_dispatch_id_reaches_the_execution_context():
+    seen = {}
+
+    async def proc(prompt: str):
+        from rebuno.execution import execution
+
+        seen["dispatch_id"] = execution.dispatch_id
+        return {}
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    async with build(agent, FakeKernel({"prompt": "hi"})) as client:
+        body = webhook_body(dispatch_id="d-42")
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+    assert seen["dispatch_id"] == "d-42"

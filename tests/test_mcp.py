@@ -13,7 +13,7 @@ class FakeKernel:
         self.decision = decision
         self.completed = []
 
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
         self.captured = dict(kind=kind, target=target, args=args, idempotency=idempotency)
         return self.decision
 
@@ -39,7 +39,7 @@ def make_call(record):
 
 
 def install_context(kernel):
-    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", agent_id="a", input=None))
+    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
 
 
 async def test_wrap_routes_through_invoke_tool_with_prefix():

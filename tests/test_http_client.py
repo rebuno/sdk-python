@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import httpx
@@ -17,12 +18,17 @@ class StepKernel:
         self.submits: list[tuple[str, str, str]] = []  # (kind, target, step_id)
         self.completed: list[str] = []
         self.deltas: list[tuple[str, int, str]] = []  # (step_id, seq, data)
+        self._counters: dict[tuple[str, str], int] = {}
 
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+        ident = json.dumps([kind, target, args], sort_keys=True)
+        occ = self._counters.get((dispatch_id, ident), 0)
+        self._counters[(dispatch_id, ident)] = occ + 1
+        step_id = f"{ident}#{occ}"
         self.submits.append((kind, target, step_id))
         if step_id in self.steps:
-            return StepDecision(decision="replay", result=self.steps[step_id])
-        return StepDecision(decision="proceed")
+            return StepDecision(decision="replay", step_id=step_id, result=self.steps[step_id])
+        return StepDecision(decision="proceed", step_id=step_id)
 
     async def complete_step(self, execution_id, step_id, *, result):
         self.steps[step_id] = result
@@ -43,8 +49,8 @@ def _client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="https://api.test")
 
 
-def _ctx(kernel) -> ExecutionContext:
-    return ExecutionContext(kernel=kernel, execution_id="e1", agent_id="a", input={})
+def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
+    return ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id=dispatch_id, agent_id="a", input={})
 
 
 REQUEST = {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}
@@ -72,8 +78,9 @@ async def test_llm_call_forwards_then_replays_on_resume():
     finally:
         _reset_current(token)
 
-    # Resume (fresh context → occurrence resets): same request replays, no provider call.
-    token = _set_current(_ctx(kernel))
+    # Resume: a new dispatch restarts occurrence counting, so the same request
+    # recomputes the same step id and replays without touching the provider.
+    token = _set_current(_ctx(kernel, "d2"))
     try:
         async with _client(handler) as client:
             r2 = await client.post("/v1/messages", json=REQUEST)
@@ -86,7 +93,7 @@ async def test_llm_call_forwards_then_replays_on_resume():
 
 async def test_denied_propagates_policy_error():
     class DenyKernel(StepKernel):
-        async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
+        async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
             return StepDecision(decision="denied", reason="model not allowed")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -150,9 +157,10 @@ async def test_streaming_tees_records_then_replays_as_stream():
     finally:
         _reset_current(token)
 
-    # Resume: replay the recorded whole as a stream — no provider call, no deltas.
+    # Resume under a new dispatch: replay the recorded whole as a stream — no
+    # provider call, no deltas.
     n_deltas = len(kernel.deltas)
-    token = _set_current(_ctx(kernel))
+    token = _set_current(_ctx(kernel, "d2"))
     try:
         async with _client(handler) as client:
             replayed = await _drain_stream(client, req)
@@ -161,6 +169,7 @@ async def test_streaming_tees_records_then_replays_as_stream():
         assert len(kernel.deltas) == n_deltas  # replay publishes nothing
     finally:
         _reset_current(token)
+
 
 async def test_streaming_recorded_when_consumer_stops_at_done_without_draining():
     # A consumer that stops reading early and closes the response without draining

@@ -9,52 +9,30 @@ from contextvars import ContextVar
 from typing import Any
 
 from rebuno.errors import Blocked, PolicyError, RateLimited, RebunoError, Terminated, ToolError
-from rebuno.identity import args_hash, compute_step_id
-from rebuno.types import Step, StepDecision
+from rebuno.types import StepDecision
 
 logger = logging.getLogger("rebuno.execution")
 
 
 class ExecutionContext:
-    """One per dispatch. Drives effect submission, replay, and occurrence counting."""
+    """One per dispatch. Submits effects to the kernel and applies its decisions."""
 
-    def __init__(self, *, kernel: Any, execution_id: str, agent_id: str, input: Any, status: str = "running"):
+    def __init__(
+        self,
+        *,
+        kernel: Any,
+        execution_id: str,
+        dispatch_id: str,
+        agent_id: str,
+        input: Any,
+        status: str = "running",
+    ):
         self._kernel = kernel
         self.id = execution_id
+        self.dispatch_id = dispatch_id
         self.agent_id = agent_id
         self.input = input
         self.status = status
-        self._occurrences: dict[tuple[str, str, str], int] = {}
-        self._submit_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
-        self._replay: dict[str, Step] | None = None
-
-    async def hydrate(self) -> None:
-        """Preload this execution's terminal steps in one read so replay costs a
-        single bulk fetch instead of one kernel round trip per replayed step.
-        """
-        try:
-            steps = await self._kernel.list_terminal_steps(self.id)
-        except Exception:
-            logger.warning("step hydration failed; falling back to per-step replay", exc_info=True)
-            self._replay = None
-            return
-        self._replay = {s.step_id: s for s in steps}
-
-    async def _decide(self, *, kind: str, target: str, args: Any, idempotency: str, step_id: str) -> StepDecision:
-        """Resolve a step decision: from the hydrated replay map when the step is
-        already terminal, otherwise by asking the kernel.
-
-        A map miss is not "new" — the step may be non-terminal (an orphan still
-        ``executing``, or ``awaiting_approval``) and must re-hit the kernel so
-        idempotency/approval logic runs. Only the kernel mints new steps.
-        """
-        if self._replay is not None:
-            hit = self._replay.get(step_id)
-            if hit is not None:
-                return _decision_from_step(hit)
-        return await self._kernel.submit_step(
-            self.id, kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id
-        )
 
     async def _run_with_heartbeat(self, run: Callable[[], Any], interval: float = 30.0) -> Any:
         """Run an effect body while a background task renews the dispatch lease, so a
@@ -84,27 +62,24 @@ class ExecutionContext:
             except Exception:
                 logger.warning("dispatch heartbeat failed", exc_info=True)
 
-    def _next_occurrence(self, kind: str, target: str, ah: str) -> int:
-        key = (kind, target, ah)
-        n = self._occurrences.get(key, 0)
-        self._occurrences[key] = n + 1
-        return n
-
     async def _submit(self, *, kind: str, target: str, args: Any, idempotency: str) -> tuple[str, StepDecision]:
-        """Assign the occurrence and run the submit handshake under a per-effect-identity
-        lock, so concurrent *identical* (kind, target, args) effects submit in a defined
-        order.
+        """Ask the kernel to decide this effect, and return ``(step_id, decision)``.
+
+        The kernel assigns the step id: it counts occurrences of this effect within
+        the dispatch under its own lock, so concurrent identical calls get distinct
+        steps without any coordination here. ``step_id`` is empty for decisions that
+        recorded no step (``rate_limited``, ``execution_*``), which
+        :meth:`_raise_for_decision` turns into an exception before it is used.
         """
-        ah = args_hash(args)
-        key = (kind, target, ah)
-        lock = self._submit_locks.get(key)
-        if lock is None:
-            lock = self._submit_locks[key] = asyncio.Lock()
-        async with lock:
-            occ = self._next_occurrence(kind, target, ah)
-            step_id = compute_step_id(self.id, kind, target, ah, occ)
-            dec = await self._decide(kind=kind, target=target, args=args, idempotency=idempotency, step_id=step_id)
-        return step_id, dec
+        dec = await self._kernel.submit_step(
+            self.id,
+            dispatch_id=self.dispatch_id,
+            kind=kind,
+            target=target,
+            args=args,
+            idempotency=idempotency,
+        )
+        return dec.step_id, dec
 
     def _raise_for_decision(self, dec: StepDecision) -> None:
         """Map a non-proceed step decision to its control-flow exception.
@@ -170,9 +145,7 @@ class ExecutionContext:
         ``decision.result``). Any other decision raises the matching control-flow
         error.
         """
-        step_id, dec = await self._submit(
-            kind="llm_call", target=target, args=request, idempotency="safe_to_retry"
-        )
+        step_id, dec = await self._submit(kind="llm_call", target=target, args=request, idempotency="safe_to_retry")
         if dec.decision == "replay":
             if dec.error is not None:
                 raise RebunoError(_error_message(dec.error))
@@ -214,23 +187,6 @@ class ExecutionContext:
             await self._kernel.fail_step(self.id, step_id, error={"message": str(error)})
         except Exception:
             logger.exception("failed to record step failure for step_id=%s", step_id)
-
-
-def _decision_from_step(step: Step) -> StepDecision:
-    """Mirror the kernel's decision for an already-terminal step, so a hydrated
-    replay is byte-for-byte what ``submit_step`` would have returned.
-
-    Terminal statuses: ``succeeded``/``failed`` replay the recorded result/error;
-    ``denied`` is a policy denial, not a replay. Anything else is unexpected for a
-    terminal-filtered step and is sent back to the kernel via ``proceed``.
-    """
-    if step.status == "succeeded":
-        return StepDecision(decision="replay", result=step.result)
-    if step.status == "failed":
-        return StepDecision(decision="replay", error=step.error)
-    if step.status == "denied":
-        return StepDecision(decision="denied", reason="policy_denied")
-    return StepDecision(decision="proceed")
 
 
 def _error_message(error: Any) -> str:

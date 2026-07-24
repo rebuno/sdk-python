@@ -2,18 +2,25 @@ import pytest
 
 from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
 from rebuno.execution import ExecutionContext, _reset_current, _set_current, execution
-from rebuno.identity import args_hash, compute_step_id
-from rebuno.types import Step, StepDecision
+from rebuno.types import StepDecision
 
 
 class FakeKernel:
+    """Stands in for the kernel: assigns each submitted step an id, the way the
+    real one does, so decisions carry the id the SDK must use to complete them."""
+
     def __init__(self, decisions):
         self.decisions = list(decisions)
         self.completed = []
         self.failed = []
+        self.submits = []
 
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
-        return self.decisions.pop(0)
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+        self.submits.append((dispatch_id, kind, target, args))
+        dec = self.decisions.pop(0)
+        if not dec.step_id and dec.decision in ("proceed", "replay"):
+            dec = dec.model_copy(update={"step_id": f"step-{len(self.submits)}"})
+        return dec
 
     async def complete_step(self, execution_id, step_id, *, result):
         self.completed.append((step_id, result))
@@ -23,7 +30,7 @@ class FakeKernel:
 
 
 def ctx(kernel):
-    return ExecutionContext(kernel=kernel, execution_id="e1", agent_id="a", input={"x": 1})
+    return ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input={"x": 1})
 
 
 async def test_proceed_runs_body_and_completes():
@@ -88,101 +95,22 @@ async def test_body_exception_reports_fail_and_reraises():
     assert k.failed
 
 
-async def test_occurrence_increments_for_identical_calls():
-    k = FakeKernel([StepDecision(decision="replay", result=1), StepDecision(decision="replay", result=2)])
+async def test_submit_forwards_dispatch_id():
+    k = FakeKernel([StepDecision(decision="replay", result=1)])
+    await ctx(k).invoke_tool("t", {"a": 1}, run=None)
+    assert k.submits[0][0] == "d1"
+
+
+async def test_identical_calls_take_the_kernels_distinct_ids():
+    k = FakeKernel([StepDecision(decision="proceed"), StepDecision(decision="proceed")])
     c = ctx(k)
-    seen = []
-
-    async def fake_submit(execution_id, *, kind, target, args, idempotency, step_id):
-        seen.append(step_id)
-        return k.decisions.pop(0)
-
-    k.submit_step = fake_submit
-    await c.invoke_tool("t", {"a": 1}, run=None)
-    await c.invoke_tool("t", {"a": 1}, run=None)
-    assert seen[0] != seen[1]  # different occurrence -> different step id
-
-
-class HydratingKernel(FakeKernel):
-    """FakeKernel that also serves a terminal-step list for hydration and tracks
-    whether submit_step was reached."""
-
-    def __init__(self, decisions, terminal_steps):
-        super().__init__(decisions)
-        self.terminal_steps = terminal_steps
-        self.submits = 0
-
-    async def list_terminal_steps(self, execution_id):
-        return list(self.terminal_steps)
-
-    async def submit_step(self, execution_id, *, kind, target, args, idempotency, step_id):
-        self.submits += 1
-        return self.decisions.pop(0)
-
-
-def _step_id_for(c, kind, target, args, occ=0):
-    return compute_step_id(c.id, kind, target, args_hash(args), occ)
-
-
-async def test_hydrated_replay_serves_from_map_without_submit():
-    args = {"q": "hi"}
-    # No decisions queued: if submit_step is reached, .pop(0) raises — proving
-    # the replay came from the hydrated map, not the kernel.
-    k = HydratingKernel([], [])
-    c = ctx(k)
-    sid = _step_id_for(c, "tool_call", "search", args)
-    k.terminal_steps = [Step(step_id=sid, status="succeeded", result={"cached": 1})]
-    await c.hydrate()
-
-    ran = False
 
     async def body():
-        nonlocal ran
-        ran = True
+        return 1
 
-    out = await c.invoke_tool("search", args, run=body)
-    assert out == {"cached": 1}
-    assert ran is False
-    assert k.submits == 0  # served entirely from the hydrated map
-
-
-async def test_hydrated_miss_falls_through_to_submit():
-    k = HydratingKernel([StepDecision(decision="proceed")], [])  # empty map -> miss
-    c = ctx(k)
-    await c.hydrate()
-
-    async def body():
-        return {"fresh": True}
-
-    out = await c.invoke_tool("search", {"q": "hi"}, run=body)
-    assert out == {"fresh": True}
-    assert k.submits == 1  # miss went to the kernel
-    assert k.completed
-
-
-async def test_hydrated_denied_step_raises_policyerror_without_submit():
-    args = {"x": 1}
-    k = HydratingKernel([], [])
-    c = ctx(k)
-    sid = _step_id_for(c, "tool_call", "danger", args)
-    k.terminal_steps = [Step(step_id=sid, status="denied")]
-    await c.hydrate()
-    with pytest.raises(PolicyError):
-        await c.invoke_tool("danger", args, run=None)
-    assert k.submits == 0
-
-
-async def test_hydrate_failure_falls_back_to_per_step():
-    class BrokenHydrate(FakeKernel):
-        async def list_terminal_steps(self, execution_id):
-            raise RuntimeError("no such endpoint")
-
-    k = BrokenHydrate([StepDecision(decision="replay", result={"ok": 1})])
-    c = ctx(k)
-    await c.hydrate()  # swallows the error
-    assert c._replay is None  # un-hydrated -> per-step path
-    out = await c.invoke_tool("t", {}, run=None)
-    assert out == {"ok": 1}
+    await c.invoke_tool("t", {"a": 1}, run=body)
+    await c.invoke_tool("t", {"a": 1}, run=body)
+    assert [sid for sid, _ in k.completed] == ["step-1", "step-2"]
 
 
 async def test_contextvar_proxy():

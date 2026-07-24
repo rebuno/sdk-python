@@ -8,12 +8,7 @@ from typing import Any
 import httpx
 
 from rebuno.errors import NotFoundError, error_from_response
-from rebuno.identity import canonical_json
 from rebuno.types import Execution, Step, StepDecision
-
-
-def _json_field(value: str) -> bytes:
-    return json.dumps(value).encode("utf-8")
 
 
 class KernelClient:
@@ -64,26 +59,13 @@ class KernelClient:
             return None
         return Step.model_validate(resp.json())
 
-    async def list_terminal_steps(self, execution_id: str) -> list[Step]:
-        """Fetch an execution's terminal steps in one read, for replay hydration."""
-        resp = await self._send("GET", f"/v0/executions/{execution_id}/steps?status=terminal", b"")
-        return [Step.model_validate(s) for s in resp.json()]
-
     async def submit_step(
-        self, execution_id: str, *, kind: str, target: str, args: Any, idempotency: str, step_id: str
+        self, execution_id: str, *, dispatch_id: str, kind: str, target: str, args: Any, idempotency: str
     ) -> StepDecision:
-        body = (
-            b'{"kind":'
-            + _json_field(kind)
-            + b',"target":'
-            + _json_field(target)
-            + b',"args":'
-            + canonical_json(args)
-            + b',"idempotency":'
-            + _json_field(idempotency)
-            + b"}"
+        body = json.dumps({"kind": kind, "target": target, "args": args, "idempotency": idempotency}).encode("utf-8")
+        resp = await self._send(
+            "POST", f"/v0/executions/{execution_id}/steps", body, {"Rebuno-Dispatch-Id": dispatch_id}
         )
-        resp = await self._send("POST", f"/v0/executions/{execution_id}/steps", body, {"Rebuno-Step-Id": step_id})
         return StepDecision.model_validate(resp.json())
 
     async def complete_step(self, execution_id: str, step_id: str, *, result: Any) -> None:

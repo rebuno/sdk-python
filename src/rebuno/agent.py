@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
 from rebuno._kernel import KernelClient
-from rebuno.errors import Blocked, PolicyError, RateLimited, StepIDMismatch, Terminated, ToolError
+from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 
 logger = logging.getLogger("rebuno.agent")
@@ -81,9 +81,10 @@ class Agent:
                 return Response(status_code=401)
             payload = _safe_json(raw)
             execution_id = (payload or {}).get("execution_id")
-            if not execution_id:
+            dispatch_id = (payload or {}).get("dispatch_id")
+            if not execution_id or not dispatch_id:
                 return Response(status_code=400)
-            task = asyncio.create_task(self._safe_handle(execution_id))
+            task = asyncio.create_task(self._safe_handle(execution_id, dispatch_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             return Response(status_code=200)
@@ -96,7 +97,7 @@ class Agent:
         expected = hmac.new(self.secret.encode(), raw, hashlib.sha256).hexdigest()
         return hmac.compare_digest(header[len("sha256=") :], expected)
 
-    async def _handle(self, execution_id: str) -> None:
+    async def _handle(self, execution_id: str, dispatch_id: str) -> None:
         assert self._process is not None and self._binder is not None
         exec = await self._kernel.get_execution(execution_id)
         if exec.status in ("completed", "failed", "cancelled"):
@@ -105,13 +106,11 @@ class Agent:
         ctx = ExecutionContext(
             kernel=self._kernel,
             execution_id=execution_id,
+            dispatch_id=dispatch_id,
             agent_id=self.agent_id,
             input=exec.input,
             status=exec.status,
         )
-        # Preload prior terminal steps in one read so re-dispatch replays from a
-        # local map instead of a kernel round trip per step.
-        await ctx.hydrate()
         token = _set_current(ctx)
         try:
             try:
@@ -125,7 +124,7 @@ class Agent:
                     output = await output
             except (Blocked, Terminated):
                 raise
-            except (PolicyError, ToolError, RateLimited, StepIDMismatch) as e:
+            except (PolicyError, ToolError, RateLimited) as e:
                 await self._kernel.fail_execution(execution_id, error=str(e))
                 return
             except Exception as e:
@@ -136,9 +135,9 @@ class Agent:
         finally:
             _reset_current(token)
 
-    async def _safe_handle(self, execution_id: str) -> None:
+    async def _safe_handle(self, execution_id: str, dispatch_id: str) -> None:
         try:
-            await self._handle(execution_id)
+            await self._handle(execution_id, dispatch_id)
         except (Blocked, Terminated):
             pass
         except Exception:

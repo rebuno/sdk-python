@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from rebuno.client import Client
-from rebuno.errors import APIError, StepIDMismatch
+from rebuno.errors import APIError
 from rebuno.types import Execution
 
 
@@ -48,12 +48,3 @@ async def test_conflict_maps_to_api_error():
     with pytest.raises(APIError) as exc_info:
         await c.cancel("e1")
     assert exc_info.value.code == "conflict"
-
-
-async def test_step_id_divergence_maps_to_step_id_mismatch():
-    def handler(req):
-        return httpx.Response(409, json={"code": "step_id_divergence", "message": "mismatch"})
-
-    c = make_client(handler)
-    with pytest.raises(StepIDMismatch):
-        await c.cancel("e1")
