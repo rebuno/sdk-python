@@ -49,9 +49,7 @@ class RebunoTransport(httpx.AsyncBaseTransport):
         if resp.status_code < 400 and _is_event_stream(resp.headers.get("content-type", "")):
             content_type = resp.headers.get("content-type", "text/event-stream")
             tee = _TeeStream(ctx, step_id, resp, content_type)
-            return httpx.Response(
-                resp.status_code, headers={"content-type": content_type}, stream=tee, request=request
-            )
+            return httpx.Response(resp.status_code, headers={"content-type": content_type}, stream=tee, request=request)
 
         # Whole response (including error statuses): read under a lease, record it,
         # and hand back a reconstructed response.
