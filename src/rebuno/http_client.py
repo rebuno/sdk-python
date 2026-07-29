@@ -20,13 +20,12 @@ class RebunoTransport(httpx.AsyncBaseTransport):
     """An httpx transport that records LLM calls as durable Rebuno steps.
 
     Wrap a real transport (defaults to ``httpx.AsyncHTTPTransport``) and use it
-    in an ``httpx.AsyncClient``. ``model_field`` names the request-body field
-    holding the model id, used as the step ``target``.
+    in an ``httpx.AsyncClient``. The request body's ``model`` is the step
+    ``target``.
     """
 
-    def __init__(self, inner: httpx.AsyncBaseTransport | None = None, *, model_field: str = "model"):
+    def __init__(self, inner: httpx.AsyncBaseTransport | None = None):
         self._inner = inner or httpx.AsyncHTTPTransport()
-        self._model_field = model_field
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         ctx = _get_current()
@@ -39,7 +38,7 @@ class RebunoTransport(httpx.AsyncBaseTransport):
             # identify, pass through untouched.
             return await self._inner.handle_async_request(request)
 
-        target = str(payload.get(self._model_field) or "")
+        target = str(payload.get("model") or "")
 
         step_id, dec = await ctx.begin_llm(target, payload)
         if dec.decision == "replay":
@@ -177,18 +176,16 @@ class _BytesStream(httpx.AsyncByteStream):
         pass
 
 
-def http_client(*, model_field: str = "model", **kwargs: Any) -> httpx.AsyncClient:
+def http_client(**kwargs: Any) -> httpx.AsyncClient:
     """Return an ``httpx.AsyncClient`` that records LLM calls as durable steps.
 
     Pass it to an async LLM client::
 
         llm = AsyncOpenAI(http_client=rebuno.http_client())
 
-    ``model_field`` names the request-body field holding the model id (the step
-    ``target``); it defaults to ``"model"``. Extra keyword arguments are
-    forwarded to ``httpx.AsyncClient`` (e.g. ``timeout``).
+    Keyword arguments are forwarded to ``httpx.AsyncClient`` (e.g. ``timeout``).
     """
-    return httpx.AsyncClient(transport=RebunoTransport(model_field=model_field), **kwargs)
+    return httpx.AsyncClient(transport=RebunoTransport(), **kwargs)
 
 
 def _is_event_stream(content_type: str) -> bool:

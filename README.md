@@ -99,9 +99,8 @@ It works as an httpx transport that sits under the provider SDK: on the first
 run it forwards the request to the provider and records the response as a durable
 step (`kind=llm_call`, the same machinery as tool calls); on resume it replays
 the recorded response instead of calling — and paying for — the model again. The
-request's model field is used as the step target; pass `model_field=...` if your
-provider names it differently. Extra kwargs (e.g. `timeout`) are forwarded to
-`httpx.AsyncClient`.
+request's `model` field is used as the step target. Extra kwargs (e.g.
+`timeout`) are forwarded to `httpx.AsyncClient`.
 
 Recording only happens inside an execution — outside one, the client is a plain
 passthrough. Two current limits: streaming responses (`stream=True`) are passed
