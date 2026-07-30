@@ -13,7 +13,7 @@ from rebuno.execution import ExecutionContext, _get_current
 
 _DELTA_FLUSH_BYTES = 2000
 _DELTA_FLUSH_INTERVAL = 0.05
-_DELTA_MAX_CHARS = 6000
+_DELTA_MAX_CHARS = 1750  # the kernel caps a delta at 7000 bytes; UTF-8 runs to 4 bytes a char
 
 
 class RebunoTransport(httpx.AsyncBaseTransport):
