@@ -92,7 +92,7 @@ class ExecutionContext:
         if dec.decision == "rate_limited":
             raise RateLimited(dec.reason or "rate_limit_exceeded")
         if dec.decision in ("blocked", "execution_blocked"):
-            raise Blocked(dec.approval_id)
+            raise Blocked
         if dec.decision == "execution_terminal":
             raise Terminated("execution is terminal")
         if dec.decision != "proceed":

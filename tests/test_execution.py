@@ -72,9 +72,8 @@ async def test_denied_raises_policyerror():
 
 async def test_blocked_raises_blocked():
     k = FakeKernel([StepDecision(decision="blocked", approval_id="ap1")])
-    with pytest.raises(Blocked) as e:
+    with pytest.raises(Blocked):
         await ctx(k).invoke_tool("t", {}, run=None)
-    assert e.value.approval_id == "ap1"
 
 
 async def test_rate_limited_and_terminal():

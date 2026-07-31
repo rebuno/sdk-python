@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 import pytest
 
-from rebuno.errors import PolicyError
+from rebuno.errors import Blocked, PolicyError, RateLimited, raise_for_refusal
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 from rebuno.http_client import RebunoTransport
 from rebuno.types import StepDecision
@@ -91,21 +91,43 @@ async def test_llm_call_forwards_then_replays_on_resume():
         _reset_current(token)
 
 
-async def test_denied_propagates_policy_error():
-    class DenyKernel(StepKernel):
+@pytest.mark.parametrize(
+    "decision,status,expected,message",
+    [
+        ("denied", 403, PolicyError, "rebuno_refusal: denied reason=nope"),
+        ("blocked", 403, Blocked, "rebuno_refusal: blocked"),
+        ("rate_limited", 429, RateLimited, "rebuno_refusal: rate_limited reason=nope"),
+    ],
+)
+async def test_refusal_is_an_http_status_the_caller_maps_back(decision, status, expected, message):
+    class RefuseKernel(StepKernel):
         async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
-            return StepDecision(decision="denied", reason="model not allowed")
+            return StepDecision(decision=decision, reason="nope")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={})
+        raise AssertionError("provider must not be called")
 
-    token = _set_current(_ctx(DenyKernel()))
+    token = _set_current(_ctx(RefuseKernel()))
     try:
         async with _client(handler) as client:
-            with pytest.raises(PolicyError):
-                await client.post("/v1/messages", json=REQUEST)
+            resp = await client.post("/v1/messages", json=REQUEST)
     finally:
         _reset_current(token)
+
+    assert resp.status_code == status
+    assert resp.json()["error"] == {"type": "rebuno_refusal", "message": message}
+
+    with pytest.raises(expected):
+        raise_for_refusal(RuntimeError(f"Error code: {status} - {resp.json()}"))
+
+
+async def test_refusal_survives_a_framework_wrapping_the_provider_error():
+    inner = RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: blocked'}}")
+    try:
+        raise ValueError("node failed") from inner
+    except ValueError as e:
+        with pytest.raises(Blocked):
+            raise_for_refusal(e)
 
 
 # A streamed provider response: a >2KB payload so the delta batcher emits

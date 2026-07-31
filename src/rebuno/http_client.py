@@ -9,7 +9,24 @@ from typing import Any
 
 import httpx
 
+from rebuno.errors import (
+    REFUSAL_TYPE,
+    Blocked,
+    PolicyError,
+    RateLimited,
+    RebunoError,
+    Terminated,
+    refusal_message,
+)
 from rebuno.execution import ExecutionContext, _get_current
+
+# The status and decision name each refusal is returned as.
+_REFUSALS: dict[type[RebunoError], tuple[int, str]] = {
+    Blocked: (403, "blocked"),
+    PolicyError: (403, "denied"),
+    RateLimited: (429, "rate_limited"),
+    Terminated: (403, "execution_terminal"),
+}
 
 _DELTA_FLUSH_BYTES = 2000
 _DELTA_FLUSH_INTERVAL = 0.05
@@ -40,7 +57,10 @@ class RebunoTransport(httpx.AsyncBaseTransport):
 
         target = str(payload.get("model") or "")
 
-        step_id, dec = await ctx.begin_llm(target, payload)
+        try:
+            step_id, dec = await ctx.begin_llm(target, payload)
+        except tuple(_REFUSALS) as e:
+            return _refusal_response(request, e)
         if dec.decision == "replay":
             return _replay_response(request, dec.result)
 
@@ -186,6 +206,15 @@ def http_client(**kwargs: Any) -> httpx.AsyncClient:
     Keyword arguments are forwarded to ``httpx.AsyncClient`` (e.g. ``timeout``).
     """
     return httpx.AsyncClient(transport=RebunoTransport(), **kwargs)
+
+
+def _refusal_response(request: httpx.Request, e: RebunoError) -> httpx.Response:
+    """A refused decision as an HTTP error carrying the refusal marker."""
+    status, decision = _REFUSALS[type(e)]
+    # Exception.__str__ skips APIError's display formatting.
+    reason = Exception.__str__(e) if isinstance(e, (PolicyError, RateLimited)) else ""
+    message = refusal_message(decision, reason)
+    return httpx.Response(status, json={"error": {"type": REFUSAL_TYPE, "message": message}}, request=request)
 
 
 def _is_event_stream(content_type: str) -> bool:

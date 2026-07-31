@@ -8,6 +8,7 @@ Public surface:
   wrap_tool   — route an arbitrary (non-decorator) tool through Rebuno
   step        — record non-deterministic local work as a durable step
   http_client — an httpx client that records LLM calls as durable steps
+  raise_for_refusal — turn a refused LLM call's provider error back into Blocked/PolicyError/...
   execution   — ambient accessor for the current ExecutionContext
 """
 
@@ -27,6 +28,7 @@ from rebuno.errors import (
     ToolError,
     UnauthorizedError,
     ValidationError,
+    raise_for_refusal,
 )
 from rebuno.execution import execution
 from rebuno.http_client import RebunoTransport, http_client
@@ -55,4 +57,5 @@ __all__ = [
     "RateLimited",
     "Blocked",
     "Terminated",
+    "raise_for_refusal",
 ]

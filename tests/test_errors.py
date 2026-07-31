@@ -21,11 +21,6 @@ def test_hierarchy():
         assert issubclass(cls, RebunoError)
 
 
-def test_blocked_carries_approval_id():
-    b = Blocked(approval_id="appr-1")
-    assert b.approval_id == "appr-1"
-
-
 def test_policy_error_reason():
     p = PolicyError("nope", rule_id="r1")
     assert p.rule_id == "r1"

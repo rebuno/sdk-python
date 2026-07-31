@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -103,9 +104,8 @@ class Blocked(RebunoError):
     'blocked' in the kernel). Not normally seen by user code.
     """
 
-    def __init__(self, approval_id: str | None = None):
+    def __init__(self) -> None:
         super().__init__("execution blocked awaiting approval")
-        self.approval_id = approval_id
 
 
 class Terminated(RebunoError):
@@ -113,6 +113,52 @@ class Terminated(RebunoError):
 
     Raised inside a kernel call so the dispatch unwinds; the handler returns 200.
     """
+
+
+REFUSAL_TYPE = "rebuno_refusal"
+
+_REFUSAL_RE = re.compile(rf"{REFUSAL_TYPE}: (\w+)")
+
+
+def refusal_message(decision: str, reason: str = "") -> str:
+    """The marker a refused LLM call carries in its HTTP error body."""
+    msg = f"{REFUSAL_TYPE}: {decision}"
+    if reason:
+        msg += f" reason={reason}"
+    return msg
+
+
+def raise_for_refusal(exc: BaseException) -> None:
+    """Re-raise a Rebuno refusal carried in a provider error as its control-flow error.
+
+    A step the kernel refuses (approval pending, policy denial, rate limit) reaches
+    an LLM call as an HTTP error. Call this on the error the provider raised to get
+    ``Blocked``, ``PolicyError``, ``RateLimited`` or ``Terminated`` back, so the
+    dispatch unwinds. Returns silently for any other exception.
+    """
+    for e in _causes(exc):
+        m = _REFUSAL_RE.search(str(e))
+        if not m:
+            continue
+        decision = m.group(1)
+        if decision in ("blocked", "execution_blocked"):
+            raise Blocked from exc
+        if decision == "execution_terminal":
+            raise Terminated(str(e)) from exc
+        if decision == "denied":
+            raise PolicyError(str(e)) from exc
+        if decision == "rate_limited":
+            raise RateLimited(str(e)) from exc
+        return
+
+
+def _causes(exc: BaseException | None, limit: int = 10):
+    """``exc`` and the exceptions it was raised from."""
+    for _ in range(limit):
+        if exc is None:
+            return
+        yield exc
+        exc = exc.__cause__ or exc.__context__
 
 
 _ERROR_BY_CODE: dict[str, type[APIError]] = {
