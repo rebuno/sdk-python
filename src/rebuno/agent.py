@@ -49,7 +49,7 @@ class Agent:
         self._kernel = KernelClient(agent_id=agent_id, secret=self.secret, http=self._http)
         self._app: FastAPI | None = None
         self._closed = False
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: dict[str, asyncio.Task] = {}
 
     def bind(self, process: Callable[..., Any]) -> None:
         self._process = process
@@ -84,9 +84,10 @@ class Agent:
             dispatch_id = (payload or {}).get("dispatch_id")
             if not execution_id or not dispatch_id:
                 return Response(status_code=400)
-            task = asyncio.create_task(self._safe_handle(execution_id, dispatch_id))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            previous = self._tasks.get(execution_id)
+            task = asyncio.create_task(self._safe_handle(execution_id, dispatch_id, previous))
+            self._tasks[execution_id] = task
+            task.add_done_callback(lambda t: self._discard(execution_id, t))
             return Response(status_code=200)
 
         return app
@@ -119,9 +120,10 @@ class Agent:
                 await self._kernel.fail_execution(execution_id, error=str(e))
                 return
             try:
-                output = self._process(**kwargs)
-                if hasattr(output, "__await__"):
-                    output = await output
+                async with ctx.lease():
+                    output = self._process(**kwargs)
+                    if hasattr(output, "__await__"):
+                        output = await output
             except (Blocked, Terminated):
                 raise
             except (PolicyError, ToolError, RateLimited) as e:
@@ -135,7 +137,14 @@ class Agent:
         finally:
             _reset_current(token)
 
-    async def _safe_handle(self, execution_id: str, dispatch_id: str) -> None:
+    def _discard(self, execution_id: str, task: asyncio.Task) -> None:
+        if self._tasks.get(execution_id) is task:
+            del self._tasks[execution_id]
+
+    async def _safe_handle(self, execution_id: str, dispatch_id: str, previous: asyncio.Task | None = None) -> None:
+        if previous is not None:
+            previous.cancel()
+            await asyncio.gather(previous, return_exceptions=True)
         try:
             await self._handle(execution_id, dispatch_id)
         except (Blocked, Terminated):
@@ -146,19 +155,19 @@ class Agent:
     async def join(self) -> None:
         """Wait for all in-flight execution handlers to finish (best-effort)."""
         if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
             self._tasks.clear()
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for task in self._tasks:
+        for task in self._tasks.values():
             if not task.done():
                 task.cancel()
         if self._tasks:
             try:
-                await asyncio.gather(*self._tasks, return_exceptions=True)
+                await asyncio.gather(*self._tasks.values(), return_exceptions=True)
             except Exception:
                 logger.debug("ignoring task cleanup error during close", exc_info=True)
             self._tasks.clear()

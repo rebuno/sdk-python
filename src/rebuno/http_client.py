@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import codecs
-import contextlib
 import json
 import time
 from typing import Any
@@ -70,11 +68,10 @@ class RebunoTransport(httpx.AsyncBaseTransport):
             tee = _TeeStream(ctx, step_id, resp, content_type)
             return httpx.Response(resp.status_code, headers={"content-type": content_type}, stream=tee, request=request)
 
-        # Whole response (including error statuses): read under a lease, record it,
-        # and hand back a reconstructed response.
+        # Whole response (including error statuses): read it, record it, and hand
+        # back a reconstructed response.
         try:
-            async with ctx.lease():
-                await resp.aread()
+            await resp.aread()
         except Exception as e:
             await ctx._fail_step_quietly(step_id, e)
             raise
@@ -109,11 +106,8 @@ class _TeeStream(httpx.AsyncByteStream):
         self._pending = ""
         self._seq = 0
         self._done = False
-        self._hb: asyncio.Task | None = None
 
     async def __aiter__(self):
-        if self._hb is None:
-            self._hb = self._ctx.start_heartbeat()  # renew the lease while streaming
         last_flush = time.monotonic()
         try:
             async for raw in self._resp.aiter_raw():
@@ -147,37 +141,27 @@ class _TeeStream(httpx.AsyncByteStream):
         if self._done:
             return
         self._done = True
-        try:
-            if error is not None:
-                await self._ctx._fail_step_quietly(self._step_id, error)
-                return
-            tail = self._decoder.decode(b"", final=True)
-            if tail:
-                self._chunks.append(tail)
-                self._pending += tail
-            if self._pending:
-                await self._flush()
-            record = {
-                "status": self._resp.status_code,
-                "headers": {"content-type": self._content_type},
-                "body": "".join(self._chunks),
-            }
-            await self._ctx.record_llm(self._step_id, record)
-        finally:
-            await self._stop_heartbeat()
+        if error is not None:
+            await self._ctx._fail_step_quietly(self._step_id, error)
+            return
+        tail = self._decoder.decode(b"", final=True)
+        if tail:
+            self._chunks.append(tail)
+            self._pending += tail
+        if self._pending:
+            await self._flush()
+        record = {
+            "status": self._resp.status_code,
+            "headers": {"content-type": self._content_type},
+            "body": "".join(self._chunks),
+        }
+        await self._ctx.record_llm(self._step_id, record)
 
     async def _flush(self) -> None:
         for i in range(0, len(self._pending), _DELTA_MAX_CHARS):
             await self._ctx.publish_llm_delta(self._step_id, self._seq, self._pending[i : i + _DELTA_MAX_CHARS])
             self._seq += 1
         self._pending = ""
-
-    async def _stop_heartbeat(self) -> None:
-        if self._hb is not None:
-            hb, self._hb = self._hb, None
-            hb.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await hb
 
 
 class _BytesStream(httpx.AsyncByteStream):

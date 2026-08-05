@@ -34,26 +34,6 @@ class ExecutionContext:
         self.input = input
         self.status = status
 
-    async def _run_with_heartbeat(self, run: Callable[[], Any], interval: float = 30.0) -> Any:
-        """Run an effect body while a background task renews the dispatch lease, so a
-        long-running but live body isn't reclaimed and double-invoked mid-step.
-
-        The body must yield to the event loop (be async / await something) for the
-        heartbeat to fire — a fully blocking sync body starves it. All the long
-        effects here (LLM/provider calls, MCP tools) are I/O-bound and async, so
-        this holds; wrap CPU-bound sync work in a thread if it ever doesn't.
-        """
-        hb = asyncio.create_task(self._heartbeat_loop(interval))
-        try:
-            result = run()
-            if inspect.isawaitable(result):
-                result = await result
-            return result
-        finally:
-            hb.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await hb
-
     async def _heartbeat_loop(self, interval: float) -> None:
         while True:
             await asyncio.sleep(interval)
@@ -126,7 +106,9 @@ class ExecutionContext:
             await self._kernel.complete_step(self.id, step_id, result=None)
             return None
         try:
-            result = await self._run_with_heartbeat(run)
+            result = run()
+            if inspect.isawaitable(result):
+                result = await result
         except (Blocked, Terminated, PolicyError, RateLimited):
             raise
         except Exception as e:
@@ -172,8 +154,14 @@ class ExecutionContext:
 
     @contextlib.asynccontextmanager
     async def lease(self, interval: float = 30.0):
-        """Renew the dispatch lease for the duration of a long effect body so it
-        isn't reclaimed and double-invoked mid-flight."""
+        """Renew the dispatch lease for the duration of the block, so the kernel
+        doesn't reclaim the dispatch and re-deliver it to a second handler.
+
+        The block must yield to the event loop for the heartbeat to fire — a fully
+        blocking sync body starves it. Everything long in a handler (LLM/provider
+        calls, MCP tools, kernel round-trips) is I/O-bound and async, so this
+        holds; wrap CPU-bound sync work in a thread if it ever doesn't.
+        """
         hb = self.start_heartbeat(interval)
         try:
             yield

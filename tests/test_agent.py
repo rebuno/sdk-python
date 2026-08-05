@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -161,3 +162,63 @@ async def test_dispatch_id_reaches_the_execution_context():
         assert r.status_code == 200
         await agent.join()
     assert seen["dispatch_id"] == "d-42"
+
+
+async def test_redelivery_supersedes_the_previous_run():
+    first_started = asyncio.Event()
+    runs = 0
+    cancelled = False
+
+    async def proc(prompt: str):
+        nonlocal runs, cancelled
+        runs += 1
+        mine = runs
+        if mine == 1:
+            first_started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+        return {"run": mine}
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await first_started.wait()
+
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        assert len(agent._tasks) == 1
+        await agent.join()
+
+    assert cancelled
+    assert k.completed == {"run": 2}
+    # The superseded run must not have written: CancelledError unwinds past the
+    # handler's except Exception without failing the execution the new run owns.
+    assert k.failed is None
+
+
+async def test_distinct_executions_run_concurrently():
+    class MultiKernel(FakeKernel):
+        def __init__(self, input):
+            super().__init__(input)
+            self.all: list[str] = []
+
+        async def complete_execution(self, execution_id, *, output):
+            self.all.append(execution_id)
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(_process_ok)
+    k = MultiKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        for exec_id in ("e1", "e2"):
+            body = webhook_body(execution_id=exec_id)
+            r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+            assert r.status_code == 200
+        await agent.join()
+    assert sorted(k.all) == ["e1", "e2"]
