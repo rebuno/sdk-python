@@ -33,6 +33,8 @@ class ExecutionContext:
         self.agent_id = agent_id
         self.input = input
         self.status = status
+        # The Blocked or Terminated this context raised, if any.
+        self.suspension: Blocked | Terminated | None = None
 
     async def _heartbeat_loop(self, interval: float) -> None:
         while True:
@@ -72,9 +74,11 @@ class ExecutionContext:
         if dec.decision == "rate_limited":
             raise RateLimited(dec.reason or "rate_limit_exceeded")
         if dec.decision in ("blocked", "execution_blocked"):
-            raise Blocked
+            self.suspension = Blocked()
+            raise self.suspension
         if dec.decision == "execution_terminal":
-            raise Terminated("execution is terminal")
+            self.suspension = Terminated("execution is terminal")
+            raise self.suspension
         if dec.decision != "proceed":
             raise RebunoError(f"unexpected step decision: {dec.decision}")
 

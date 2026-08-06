@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
 from rebuno._kernel import KernelClient
-from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
+from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError, raise_for_refusal
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 
 logger = logging.getLogger("rebuno.agent")
@@ -124,13 +124,21 @@ class Agent:
                     output = self._process(**kwargs)
                     if hasattr(output, "__await__"):
                         output = await output
+                if ctx.suspension is not None:
+                    raise ctx.suspension
             except (Blocked, Terminated):
                 raise
-            except (PolicyError, ToolError, RateLimited) as e:
-                await self._kernel.fail_execution(execution_id, error=str(e))
-                return
             except Exception as e:
-                logger.exception("process error: execution_id=%s", execution_id)
+                if ctx.suspension is not None:
+                    raise ctx.suspension from e
+                # Blocked and Terminated propagate; a denial or rate limit is
+                # rebound onto e and fails the execution below.
+                try:
+                    raise_for_refusal(e)
+                except (PolicyError, RateLimited) as refused:
+                    e = refused
+                if not isinstance(e, (PolicyError, ToolError, RateLimited)):
+                    logger.exception("process error: execution_id=%s", execution_id)
                 await self._kernel.fail_execution(execution_id, error=str(e))
                 return
             await self._kernel.complete_execution(execution_id, output=output)
