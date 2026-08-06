@@ -222,3 +222,108 @@ async def test_distinct_executions_run_concurrently():
             assert r.status_code == 200
         await agent.join()
     assert sorted(k.all) == ["e1", "e2"]
+
+
+class BlockingKernel(FakeKernel):
+    """Holds every step for approval, the way a require_approval policy does."""
+
+    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+        from rebuno.types import StepDecision
+
+        return StepDecision(decision="blocked", step_id="s1", approval_id="ap1")
+
+
+async def test_swallowed_block_does_not_complete_execution():
+    """Frameworks catch what a tool raises and hand it to the model, so the handler
+    can return an answer for work the kernel never allowed to run. That answer must
+    not be recorded as the execution's output."""
+    from rebuno import tool
+
+    @tool("send_email", idempotency="at_most_once")
+    async def send_email(body: str) -> dict:
+        return {"sent": True}
+
+    async def proc(prompt: str):
+        try:
+            await send_email("brief")
+        except Exception:
+            pass
+        return {"answer": "emailed"}
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = BlockingKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed is None
+        assert k.failed is None
+
+
+async def test_swallowed_block_survives_a_later_exception():
+    """After swallowing the block a framework calls the LLM again, and that refusal
+    surfaces as the provider's own error rather than Blocked."""
+    from rebuno import tool
+
+    @tool("send_email", idempotency="at_most_once")
+    async def send_email(body: str) -> dict:
+        return {"sent": True}
+
+    async def proc(prompt: str):
+        try:
+            await send_email("brief")
+        except Exception:
+            pass
+        raise RuntimeError("Error code: 403 - provider rejected the call")
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = BlockingKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed is None
+        assert k.failed is None
+
+
+async def test_gateway_refusal_parks_the_execution():
+    """A step a gateway refused is never raised in this process; the decision only
+    exists inside the provider's error."""
+
+    async def proc(prompt: str):
+        raise RuntimeError(
+            "Error code: 403 - {'error': {'message': 'rebuno_refusal: execution_blocked'}}"
+        )
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed is None
+        assert k.failed is None
+
+
+async def test_gateway_denial_fails_the_execution():
+    async def proc(prompt: str):
+        raise RuntimeError(
+            "Error code: 403 - {'error': {'message': 'rebuno_refusal: denied'}}"
+        )
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.completed is None
+        assert k.failed and "denied" in k.failed
