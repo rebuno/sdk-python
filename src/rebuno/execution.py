@@ -4,14 +4,16 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypeVar
 
 from rebuno.errors import Blocked, PolicyError, RateLimited, RebunoError, Terminated, ToolError
 from rebuno.types import StepDecision
 
 logger = logging.getLogger("rebuno.execution")
+
+_T = TypeVar("_T")
 
 
 class ExecutionContext:
@@ -35,6 +37,17 @@ class ExecutionContext:
         self.status = status
         # The Blocked or Terminated this context raised, if any.
         self.suspension: Blocked | Terminated | None = None
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+
+    async def _on_owner_loop(self, coro: Coroutine[Any, Any, _T]) -> _T:
+        """Await ``coro`` on the loop this context was created on, which is the
+        one the kernel client's connections are bound to."""
+        if self._loop is None or asyncio.get_running_loop() is self._loop:
+            return await coro
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
 
     async def _heartbeat_loop(self, interval: float) -> None:
         while True:
@@ -53,13 +66,15 @@ class ExecutionContext:
         recorded no step (``rate_limited``, ``execution_*``), which
         :meth:`_raise_for_decision` turns into an exception before it is used.
         """
-        dec = await self._kernel.submit_step(
-            self.id,
-            dispatch_id=self.dispatch_id,
-            kind=kind,
-            target=target,
-            args=args,
-            idempotency=idempotency,
+        dec = await self._on_owner_loop(
+            self._kernel.submit_step(
+                self.id,
+                dispatch_id=self.dispatch_id,
+                kind=kind,
+                target=target,
+                args=args,
+                idempotency=idempotency,
+            )
         )
         return dec.step_id, dec
 
@@ -107,7 +122,7 @@ class ExecutionContext:
 
         # proceed: run the body, record the outcome.
         if run is None:
-            await self._kernel.complete_step(self.id, step_id, result=None)
+            await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=None))
             return None
         try:
             result = run()
@@ -120,7 +135,7 @@ class ExecutionContext:
             if isinstance(e, ToolError):
                 raise
             raise ToolError(str(e), tool_id=target, step_id=step_id) from e
-        await self._kernel.complete_step(self.id, step_id, result=result)
+        await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=result))
         return result
 
     async def begin_llm(self, target: str, request: Any) -> tuple[str, StepDecision]:
@@ -143,13 +158,13 @@ class ExecutionContext:
         """Publish a live delta for an in-flight streamed step. Best-effort:
         failures are logged and swallowed."""
         try:
-            await self._kernel.stream_delta(self.id, step_id, seq=seq, data=data)
+            await self._on_owner_loop(self._kernel.stream_delta(self.id, step_id, seq=seq, data=data))
         except Exception:
             logger.debug("stream delta publish failed for step_id=%s", step_id, exc_info=True)
 
     async def record_llm(self, step_id: str, result: Any) -> None:
         """Record the assembled streamed response as the step's durable result."""
-        await self._kernel.complete_step(self.id, step_id, result=result)
+        await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=result))
 
     def start_heartbeat(self, interval: float = 30.0) -> asyncio.Task:
         """Start a background lease-renewal task and return it. The caller must
@@ -176,7 +191,7 @@ class ExecutionContext:
 
     async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
         try:
-            await self._kernel.fail_step(self.id, step_id, error={"message": str(error)})
+            await self._on_owner_loop(self._kernel.fail_step(self.id, step_id, error={"message": str(error)}))
         except Exception:
             logger.exception("failed to record step failure for step_id=%s", step_id)
 

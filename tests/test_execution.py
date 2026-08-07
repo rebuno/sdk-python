@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
@@ -173,3 +175,36 @@ async def test_fail_step_failure_does_not_mask_original_exception():
         await ctx(k).invoke_tool("t", {}, run=body)
     assert "kaboom" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+async def test_kernel_calls_from_a_second_loop_run_on_the_owner_loop():
+    """A framework that runs tools on its own thread awaits them on a second event
+    loop. The kernel client's connections belong to the loop the context was
+    created on, so the round-trips are handed back to it."""
+
+    class LoopRecordingKernel(FakeKernel):
+        def __init__(self, decisions):
+            super().__init__(decisions)
+            self.loops = []
+
+        async def submit_step(self, execution_id, **kw):
+            self.loops.append(asyncio.get_running_loop())
+            return await super().submit_step(execution_id, **kw)
+
+        async def complete_step(self, execution_id, step_id, *, result):
+            self.loops.append(asyncio.get_running_loop())
+            await super().complete_step(execution_id, step_id, result=result)
+
+    k = LoopRecordingKernel([StepDecision(decision="proceed")])
+    owner = asyncio.get_running_loop()
+    c = ctx(k)
+    body_loops = []
+
+    async def body():
+        body_loops.append(asyncio.get_running_loop())
+        return {"echo": "hi"}
+
+    out = await asyncio.to_thread(lambda: asyncio.run(c.invoke_tool("search", {"q": "hi"}, run=body)))
+    assert out == {"echo": "hi"}
+    assert k.loops == [owner, owner]
+    assert body_loops[0] is not owner
