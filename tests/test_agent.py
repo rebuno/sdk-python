@@ -151,7 +151,7 @@ async def test_dispatch_id_reaches_the_execution_context():
     async def proc(prompt: str):
         from rebuno.execution import execution
 
-        seen["dispatch_id"] = execution.dispatch_id
+        seen["dispatch_id"] = execution().dispatch_id
         return {}
 
     agent = Agent("a", secret=SECRET, base_url="http://k")

@@ -190,20 +190,20 @@ def _error_message(error: Any) -> str:
 _current: ContextVar[ExecutionContext | None] = ContextVar("rebuno_execution", default=None)
 
 
-class _ExecutionProxy:
+class _ExecutionAccessor:
     __slots__ = ()
 
-    def _state(self) -> ExecutionContext:
+    def __call__(self) -> ExecutionContext:
         state = _current.get()
         if state is None:
-            raise RuntimeError("execution.* accessed without an active execution context")
+            raise RuntimeError("execution() called without an active execution context")
         return state
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._state(), name)
+        raise AttributeError(f"rebuno.execution is called, not read — use execution().{name}")
 
 
-execution = _ExecutionProxy()
+execution = _ExecutionAccessor()
 
 
 def _set_current(state: ExecutionContext | None) -> Any:

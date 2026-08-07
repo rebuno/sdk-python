@@ -116,8 +116,8 @@ async def test_contextvar_proxy():
     c = ctx(FakeKernel([]))
     token = _set_current(c)
     try:
-        assert execution.id == "e1"
-        assert execution.input == {"x": 1}
+        assert execution().id == "e1"
+        assert execution().input == {"x": 1}
     finally:
         _reset_current(token)
 
