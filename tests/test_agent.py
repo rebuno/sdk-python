@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -244,10 +245,8 @@ async def test_swallowed_block_does_not_complete_execution():
         return {"sent": True}
 
     async def proc(prompt: str):
-        try:
+        with contextlib.suppress(Exception):
             await send_email("brief")
-        except Exception:
-            pass
         return {"answer": "emailed"}
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
@@ -272,10 +271,8 @@ async def test_swallowed_block_survives_a_later_exception():
         return {"sent": True}
 
     async def proc(prompt: str):
-        try:
+        with contextlib.suppress(Exception):
             await send_email("brief")
-        except Exception:
-            pass
         raise RuntimeError("Error code: 403 - provider rejected the call")
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
@@ -295,9 +292,7 @@ async def test_gateway_refusal_parks_the_execution():
     exists inside the provider's error."""
 
     async def proc(prompt: str):
-        raise RuntimeError(
-            "Error code: 403 - {'error': {'message': 'rebuno_refusal: execution_blocked'}}"
-        )
+        raise RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: execution_blocked'}}")
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
@@ -313,9 +308,7 @@ async def test_gateway_refusal_parks_the_execution():
 
 async def test_gateway_denial_fails_the_execution():
     async def proc(prompt: str):
-        raise RuntimeError(
-            "Error code: 403 - {'error': {'message': 'rebuno_refusal: denied'}}"
-        )
+        raise RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: denied'}}")
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
