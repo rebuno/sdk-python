@@ -9,7 +9,7 @@ class FakeKernel:
         self.completed = []
 
     async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
-        self.captured = dict(target=target, args=args, idempotency=idempotency)
+        self.captured = dict(target=target, args=args, idempotency=idempotency, kind=kind)
         return self.decision
 
     async def complete_step(self, execution_id, step_id, *, result):
@@ -26,6 +26,7 @@ async def test_step_records_local_work():
     assert out == 42
     assert k.captured["target"] == "pick_id"
     assert k.captured["args"] == {}
+    assert k.captured["kind"] == "local"
     assert k.completed == [42]
 
 

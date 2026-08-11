@@ -104,14 +104,16 @@ class ExecutionContext:
         *,
         idempotency: str = "safe_to_retry",
         run: Callable[[], Any] | None = None,
+        kind: str = "tool_call",
     ) -> Any:
         """Submit a step and, if the kernel says proceed, run the body.
 
         ``run`` is called with no arguments — callers close over whatever
         inputs the body needs. ``args`` is only the JSON-recorded payload
         used for step identity/hashing, not ``run``'s call signature.
+
+        ``kind`` is the step kind the kernel records and policy matches on.
         """
-        kind = "tool_call"
         step_id, dec = await self._submit(kind=kind, target=target, args=args, idempotency=idempotency)
 
         if dec.decision == "replay":

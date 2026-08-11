@@ -20,6 +20,8 @@ async def step(
     (default) for reads/non-determinism; ``at_most_once`` for side effects that
     must not be re-run on resume.
 
+    Recorded as a step of kind ``local``
+
     ``args`` is the JSON-recorded payload used for step identity/hashing. It is
     passed to ``fn`` as ``fn(**args)`` when the step runs; pass ``None`` (the
     default) when ``fn`` takes no arguments.
@@ -28,4 +30,4 @@ async def step(
     if ctx is None:
         raise RuntimeError(f"rebuno.step('{name}') called outside an active execution.")
     payload = args or {}
-    return await ctx.invoke_tool(name, payload, idempotency=idempotency, run=lambda: fn(**payload))
+    return await ctx.invoke_tool(name, payload, idempotency=idempotency, run=lambda: fn(**payload), kind="local")
