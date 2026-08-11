@@ -5,7 +5,12 @@ import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from rebuno.errors import PolicyError
 from rebuno.execution import _get_current
+
+
+def _refusal_result(tool_id: str, refusal: PolicyError) -> str:
+    return f"{tool_id} not allowed. reason: {refusal}"
 
 
 def tool(
@@ -85,7 +90,10 @@ def wrap_tool(
                 result = await result
             return to_result(result) if to_result is not None else result
 
-        return await ctx.invoke_tool(name, args, idempotency=idempotency, run=run)
+        try:
+            return await ctx.invoke_tool(name, args, idempotency=idempotency, run=run)
+        except PolicyError as refusal:
+            return _refusal_result(name, refusal)
 
     wrapper.__name__ = name
     wrapper.__qualname__ = name
@@ -129,8 +137,11 @@ def _build_wrapper(tool_id: str, fn: Callable[..., Any], idempotency: str) -> Ca
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         arguments = dict(bound.arguments)
-        return await ctx.invoke_tool(
-            tool_id, arguments, idempotency=idempotency, run=lambda: fn(*bound.args, **bound.kwargs)
-        )
+        try:
+            return await ctx.invoke_tool(
+                tool_id, arguments, idempotency=idempotency, run=lambda: fn(*bound.args, **bound.kwargs)
+            )
+        except PolicyError as refusal:
+            return _refusal_result(tool_id, refusal)
 
     return wrapper
