@@ -84,6 +84,10 @@ class ToolError(RebunoError):
         self.step_id = step_id
         self.retryable = retryable
 
+    def __str__(self) -> str:
+        message = super().__str__()
+        return f"{self.tool_id}: {message}" if self.tool_id else message
+
     def __repr__(self) -> str:
         return f"ToolError(tool_id={self.tool_id!r}, step_id={self.step_id!r})"
 

@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from rebuno.agent import Agent
+from rebuno.errors import ToolError
 
 SECRET = "dev-secret"
 
@@ -98,6 +99,21 @@ async def test_process_exception_fails_execution():
         assert r.status_code == 200
         await agent.join()
         assert k.failed and "boom" in k.failed
+
+
+async def test_tool_failure_reason_names_the_tool():
+    async def proc(prompt: str):
+        raise ToolError("indeterminate", tool_id="send_email", step_id="s1")
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed == "send_email: indeterminate"
 
 
 async def test_rate_limited_fails_execution_cleanly():
