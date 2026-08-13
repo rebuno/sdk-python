@@ -102,10 +102,13 @@ the recorded response instead of calling — and paying for — the model again.
 request's `model` field is used as the step target. Extra kwargs (e.g.
 `timeout`) are forwarded to `httpx.AsyncClient`.
 
+Streaming works the same way: the transport tees the provider's event stream to
+your code while assembling it, records the assembled whole, and replays it as a
+stream so `stream=True` still yields a stream on resume.
+
 Recording only happens inside an execution — outside one, the client is a plain
-passthrough. Two current limits: streaming responses (`stream=True`) are passed
-through un-recorded (you'll get a warning), and non-JSON request bodies aren't
-recognized as LLM calls.
+passthrough. One current limit: non-JSON request bodies aren't recognized as LLM
+calls.
 
 ## Durable local work
 
