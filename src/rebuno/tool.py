@@ -100,6 +100,7 @@ def wrap_tool(
     wrapper.__doc__ = description or None
     wrapper.__signature__ = _signature_from_schema(schema)  # type: ignore[attr-defined]
     wrapper.__input_schema__ = schema  # type: ignore[attr-defined]
+    wrapper.__idempotency__ = idempotency  # type: ignore[attr-defined]
     return wrapper
 
 
@@ -144,4 +145,5 @@ def _build_wrapper(tool_id: str, fn: Callable[..., Any], idempotency: str) -> Ca
         except PolicyError as refusal:
             return _refusal_result(tool_id, refusal)
 
+    wrapper.__idempotency__ = idempotency  # type: ignore[attr-defined]
     return wrapper
