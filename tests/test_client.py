@@ -9,7 +9,11 @@ from rebuno.types import Execution
 def make_client(handler):
     transport = httpx.MockTransport(handler)
     c = Client(base_url="http://k", api_key="tok")
-    c._http = httpx.AsyncClient(transport=transport, base_url="http://k", headers={"Authorization": "Bearer tok"})
+    c._http = httpx.AsyncClient(
+        transport=transport,
+        base_url="http://k",
+        headers={"Authorization": "Bearer tok"},
+    )
     return c
 
 
@@ -18,7 +22,9 @@ async def test_create_execution():
         assert req.method == "POST"
         assert req.url.path == "/v0/executions"
         assert req.headers["Authorization"] == "Bearer tok"
-        return httpx.Response(201, json={"id": "e1", "agent_id": "a", "status": "pending"})
+        return httpx.Response(
+            201, json={"id": "e1", "agent_id": "a", "status": "pending"}
+        )
 
     c = make_client(handler)
     exec = await c.create("a", input={"x": 1})
@@ -42,7 +48,9 @@ async def test_cancel_and_approvals():
 
 async def test_conflict_maps_to_api_error():
     def handler(req):
-        return httpx.Response(409, json={"code": "conflict", "message": "already exists"})
+        return httpx.Response(
+            409, json={"code": "conflict", "message": "already exists"}
+        )
 
     c = make_client(handler)
     with pytest.raises(APIError) as exc_info:

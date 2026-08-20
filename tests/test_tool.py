@@ -14,8 +14,12 @@ class FakeKernel:
         self.decision = decision
         self.completed = []
 
-    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
-        self.captured = dict(kind=kind, target=target, args=args, idempotency=idempotency)
+    async def submit_step(
+        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+    ):
+        self.captured = dict(
+            kind=kind, target=target, args=args, idempotency=idempotency
+        )
         return self.decision
 
     async def complete_step(self, execution_id, step_id, *, result):
@@ -39,7 +43,11 @@ async def variadic(a: int, *rest: int, **opts: Any) -> dict:
 
 async def test_tool_runs_under_context_and_binds_args():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
+    token = _set_current(
+        ExecutionContext(
+            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+        )
+    )
     try:
         out = await search("hi")
     finally:
@@ -51,7 +59,11 @@ async def test_tool_runs_under_context_and_binds_args():
 
 async def test_tool_id_and_idempotency_override():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
+    token = _set_current(
+        ExecutionContext(
+            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+        )
+    )
     try:
         await danger(1)
     finally:
@@ -67,7 +79,11 @@ async def test_tool_outside_context_raises():
 
 async def test_tool_variadic_args_expand_correctly():
     k = FakeKernel(StepDecision(decision="proceed"))
-    token = _set_current(ExecutionContext(kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
+    token = _set_current(
+        ExecutionContext(
+            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+        )
+    )
     try:
         out = await variadic(1, 2, 3, x=9)
     finally:
@@ -85,7 +101,11 @@ _SCHEMA = {
 
 
 def _ctx(kernel):
-    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
+    return _set_current(
+        ExecutionContext(
+            kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+        )
+    )
 
 
 async def test_wrap_tool_uses_name_verbatim_as_target():
@@ -103,7 +123,9 @@ async def test_wrap_tool_uses_name_verbatim_as_target():
     finally:
         _reset_current(token)
     assert k.captured["kind"] == "tool_call"
-    assert k.captured["target"] == "github_create_issue"  # name is the id, no prefix machinery
+    assert (
+        k.captured["target"] == "github_create_issue"
+    )  # name is the id, no prefix machinery
     assert k.captured["args"] == {"title": "bug"}
     assert seen == [{"title": "bug"}]  # invoke receives the args dict
     assert out == {"id": 1}
@@ -145,7 +167,11 @@ async def test_wrap_tool_transform_args_applied_before_record_and_invoke():
         seen.append(args)
         return None
 
-    fn = wrap_tool("t", invoke, transform_args=lambda a: {k: v for k, v in a.items() if v is not None})
+    fn = wrap_tool(
+        "t",
+        invoke,
+        transform_args=lambda a: {k: v for k, v in a.items() if v is not None},
+    )
     token = _ctx(k)
     try:
         await fn(x=1, y=None)
@@ -156,7 +182,9 @@ async def test_wrap_tool_transform_args_applied_before_record_and_invoke():
 
 
 async def test_wrap_tool_synthetic_signature_and_metadata():
-    fn = wrap_tool("create_issue", lambda a: None, description="Open an issue", args_schema=_SCHEMA)
+    fn = wrap_tool(
+        "create_issue", lambda a: None, description="Open an issue", args_schema=_SCHEMA
+    )
     sig = inspect.signature(fn)
     assert list(sig.parameters) == ["title", "body"]
     assert sig.parameters["title"].default is inspect.Parameter.empty  # required

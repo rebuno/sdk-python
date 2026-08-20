@@ -15,7 +15,14 @@ from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
 from rebuno._kernel import KernelClient
-from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError, raise_for_refusal
+from rebuno.errors import (
+    Blocked,
+    PolicyError,
+    RateLimited,
+    Terminated,
+    ToolError,
+    raise_for_refusal,
+)
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 
 logger = logging.getLogger("rebuno.agent")
@@ -36,9 +43,13 @@ class Agent:
         if not agent_id:
             raise ValueError("agent_id must not be empty")
         self.agent_id = agent_id
-        self.secret = secret if secret is not None else os.environ.get("REBUNO_AGENT_SECRET", "")
+        self.secret = (
+            secret if secret is not None else os.environ.get("REBUNO_AGENT_SECRET", "")
+        )
         if not self.secret:
-            raise ValueError("secret required (set REBUNO_AGENT_SECRET or pass secret=)")
+            raise ValueError(
+                "secret required (set REBUNO_AGENT_SECRET or pass secret=)"
+            )
         self.base_url = (base_url or os.environ.get("REBUNO_URL", "")).rstrip("/")
         if not self.base_url:
             raise ValueError("base_url required (set REBUNO_URL or pass base_url=)")
@@ -46,7 +57,9 @@ class Agent:
         self._process: Callable[..., Any] | None = None
         self._binder: InputBinder | None = None
         self._http = httpx.AsyncClient(base_url=self.base_url, timeout=kernel_timeout)
-        self._kernel = KernelClient(agent_id=agent_id, secret=self.secret, http=self._http)
+        self._kernel = KernelClient(
+            agent_id=agent_id, secret=self.secret, http=self._http
+        )
         self._app: FastAPI | None = None
         self._closed = False
         self._tasks: dict[str, asyncio.Task] = {}
@@ -85,7 +98,9 @@ class Agent:
             if not execution_id or not dispatch_id:
                 return Response(status_code=400)
             previous = self._tasks.get(execution_id)
-            task = asyncio.create_task(self._safe_handle(execution_id, dispatch_id, previous))
+            task = asyncio.create_task(
+                self._safe_handle(execution_id, dispatch_id, previous)
+            )
             self._tasks[execution_id] = task
             task.add_done_callback(lambda t: self._discard(execution_id, t))
             return Response(status_code=200)
@@ -149,7 +164,9 @@ class Agent:
         if self._tasks.get(execution_id) is task:
             del self._tasks[execution_id]
 
-    async def _safe_handle(self, execution_id: str, dispatch_id: str, previous: asyncio.Task | None = None) -> None:
+    async def _safe_handle(
+        self, execution_id: str, dispatch_id: str, previous: asyncio.Task | None = None
+    ) -> None:
         if previous is not None:
             previous.cancel()
             await asyncio.gather(previous, return_exceptions=True)
@@ -186,7 +203,9 @@ class Agent:
             # shutdown closed connections out from under us). Nothing left to do.
             logger.debug("ignoring transport error during close", exc_info=True)
 
-    def run(self, process: Callable[..., Any], *, host: str = "0.0.0.0", port: int = 5000) -> None:
+    def run(
+        self, process: Callable[..., Any], *, host: str = "0.0.0.0", port: int = 5000
+    ) -> None:
         """Bind the process and serve the webhook app with uvicorn (blocking)."""
         import uvicorn
 

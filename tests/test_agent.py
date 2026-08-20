@@ -26,7 +26,9 @@ class FakeKernel:
     async def get_execution(self, execution_id):
         from rebuno.types import Execution
 
-        return Execution(id=execution_id, agent_id="a", input=self._input, status="running")
+        return Execution(
+            id=execution_id, agent_id="a", input=self._input, status="running"
+        )
 
     async def complete_execution(self, execution_id, *, output):
         self.completed = output
@@ -41,7 +43,9 @@ def build(agent, kernel):
 
 
 def webhook_body(execution_id="e1", dispatch_id="d1") -> bytes:
-    return json.dumps({"execution_id": execution_id, "dispatch_id": dispatch_id}).encode()
+    return json.dumps(
+        {"execution_id": execution_id, "dispatch_id": dispatch_id}
+    ).encode()
 
 
 async def _process_ok(prompt: str):
@@ -53,7 +57,9 @@ async def test_invalid_signature_401():
     agent.bind(_process_ok)
     async with build(agent, FakeKernel({"prompt": "hi"})) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": "sha256=bad"})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": "sha256=bad"}
+        )
         assert r.status_code == 401
 
 
@@ -63,7 +69,9 @@ async def test_completes_execution():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed == {"answer": "HI"}
@@ -80,7 +88,9 @@ async def test_blocked_returns_200_without_complete():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed is None
@@ -95,7 +105,9 @@ async def test_process_exception_fails_execution():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.failed and "boom" in k.failed
@@ -110,7 +122,9 @@ async def test_tool_failure_reason_names_the_tool():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.failed == "send_email: indeterminate"
@@ -127,7 +141,9 @@ async def test_rate_limited_fails_execution_cleanly():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.failed and "rate_limit_exceeded" in k.failed
@@ -158,7 +174,9 @@ async def test_webhook_without_dispatch_id_is_rejected():
     agent.bind(_process_ok)
     async with build(agent, FakeKernel({"prompt": "hi"})) as client:
         body = json.dumps({"execution_id": "e1"}).encode()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 400
 
 
@@ -175,7 +193,9 @@ async def test_dispatch_id_reaches_the_execution_context():
     agent.bind(proc)
     async with build(agent, FakeKernel({"prompt": "hi"})) as client:
         body = webhook_body(dispatch_id="d-42")
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
     assert seen["dispatch_id"] == "d-42"
@@ -204,11 +224,15 @@ async def test_redelivery_supersedes_the_previous_run():
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await first_started.wait()
 
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         assert len(agent._tasks) == 1
         await agent.join()
@@ -235,7 +259,9 @@ async def test_distinct_executions_run_concurrently():
     async with build(agent, k) as client:
         for exec_id in ("e1", "e2"):
             body = webhook_body(execution_id=exec_id)
-            r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+            r = await client.post(
+                "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+            )
             assert r.status_code == 200
         await agent.join()
     assert sorted(k.all) == ["e1", "e2"]
@@ -244,7 +270,9 @@ async def test_distinct_executions_run_concurrently():
 class BlockingKernel(FakeKernel):
     """Holds every step for approval, the way a require_approval policy does."""
 
-    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+    async def submit_step(
+        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+    ):
         from rebuno.types import StepDecision
 
         return StepDecision(decision="blocked", step_id="s1", approval_id="ap1")
@@ -270,7 +298,9 @@ async def test_swallowed_block_does_not_complete_execution():
     k = BlockingKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed is None
@@ -296,7 +326,9 @@ async def test_swallowed_block_survives_a_later_exception():
     k = BlockingKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed is None
@@ -308,14 +340,18 @@ async def test_gateway_refusal_parks_the_execution():
     exists inside the provider's error."""
 
     async def proc(prompt: str):
-        raise RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: execution_blocked'}}")
+        raise RuntimeError(
+            "Error code: 403 - {'error': {'message': 'rebuno_refusal: execution_blocked'}}"
+        )
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed is None
@@ -324,14 +360,18 @@ async def test_gateway_refusal_parks_the_execution():
 
 async def test_gateway_denial_fails_the_execution():
     async def proc(prompt: str):
-        raise RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: denied'}}")
+        raise RuntimeError(
+            "Error code: 403 - {'error': {'message': 'rebuno_refusal: denied'}}"
+        )
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
-        r = await client.post("/webhook", content=body, headers={"Rebuno-Signature": sign(body)})
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
         assert r.status_code == 200
         await agent.join()
         assert k.completed is None

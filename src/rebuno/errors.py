@@ -174,7 +174,9 @@ _ERROR_BY_CODE: dict[str, type[APIError]] = {
 }
 
 
-def error_from_response(code: str, message: str, status_code: int, *, rule_id: str = "") -> RebunoError:
+def error_from_response(
+    code: str, message: str, status_code: int, *, rule_id: str = ""
+) -> RebunoError:
     """Translate a kernel error envelope ({"code", "message"}) into the matching SDK exception.
 
     Shared by Client and KernelClient so the two HTTP clients can't map the same

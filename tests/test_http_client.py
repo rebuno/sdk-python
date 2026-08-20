@@ -20,14 +20,18 @@ class StepKernel:
         self.deltas: list[tuple[str, int, str]] = []  # (step_id, seq, data)
         self._counters: dict[tuple[str, str], int] = {}
 
-    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+    async def submit_step(
+        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+    ):
         ident = json.dumps([kind, target, args], sort_keys=True)
         occ = self._counters.get((dispatch_id, ident), 0)
         self._counters[(dispatch_id, ident)] = occ + 1
         step_id = f"{ident}#{occ}"
         self.submits.append((kind, target, step_id))
         if step_id in self.steps:
-            return StepDecision(decision="replay", step_id=step_id, result=self.steps[step_id])
+            return StepDecision(
+                decision="replay", step_id=step_id, result=self.steps[step_id]
+            )
         return StepDecision(decision="proceed", step_id=step_id)
 
     async def complete_step(self, execution_id, step_id, *, result):
@@ -50,7 +54,13 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
-    return ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id=dispatch_id, agent_id="a", input={})
+    return ExecutionContext(
+        kernel=kernel,
+        execution_id="e1",
+        dispatch_id=dispatch_id,
+        agent_id="a",
+        input={},
+    )
 
 
 REQUEST = {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}
@@ -99,9 +109,13 @@ async def test_llm_call_forwards_then_replays_on_resume():
         ("rate_limited", 429, RateLimited, "rebuno_refusal: rate_limited reason=nope"),
     ],
 )
-async def test_refusal_is_an_http_status_the_caller_maps_back(decision, status, expected, message):
+async def test_refusal_is_an_http_status_the_caller_maps_back(
+    decision, status, expected, message
+):
     class RefuseKernel(StepKernel):
-        async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+        async def submit_step(
+            self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        ):
             return StepDecision(decision=decision, reason="nope")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -122,7 +136,9 @@ async def test_refusal_is_an_http_status_the_caller_maps_back(decision, status, 
 
 
 async def test_refusal_survives_a_framework_wrapping_the_provider_error():
-    inner = RuntimeError("Error code: 403 - {'error': {'message': 'rebuno_refusal: blocked'}}")
+    inner = RuntimeError(
+        "Error code: 403 - {'error': {'message': 'rebuno_refusal: blocked'}}"
+    )
     try:
         raise ValueError("node failed") from inner
     except ValueError as e:
@@ -143,7 +159,9 @@ def _sse_handler(calls: dict[str, int]):
             for i in range(0, len(SSE), 512):  # deliver in network-sized chunks
                 yield SSE[i : i + 512]
 
-        return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, content=body(), headers={"content-type": "text/event-stream"}
+        )
 
     return handler
 
@@ -202,7 +220,9 @@ async def test_streaming_recorded_when_consumer_stops_at_done_without_draining()
     try:
         async with (
             _client(_sse_handler(calls)) as client,
-            client.stream("POST", "/v1/messages", json={**REQUEST, "stream": True}) as r,
+            client.stream(
+                "POST", "/v1/messages", json={**REQUEST, "stream": True}
+            ) as r,
         ):
             got = b""
             async for chunk in r.aiter_raw():
@@ -210,7 +230,9 @@ async def test_streaming_recorded_when_consumer_stops_at_done_without_draining()
                 if b"[DONE]" in got:
                     break  # stop early — do not pull to EOF
         assert kernel.completed  # recorded on close, not left executing
-        assert "".join(d[2] for d in kernel.deltas) == SSE.decode()  # all bytes still teed
+        assert (
+            "".join(d[2] for d in kernel.deltas) == SSE.decode()
+        )  # all bytes still teed
     finally:
         _reset_current(token)
 
@@ -224,7 +246,9 @@ async def test_streaming_midstream_error_not_recorded_as_success():
             yield SSE[:512]
             raise RuntimeError("connection dropped mid-stream")
 
-        return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+        return httpx.Response(
+            200, content=body(), headers={"content-type": "text/event-stream"}
+        )
 
     token = _set_current(_ctx(kernel))
     try:

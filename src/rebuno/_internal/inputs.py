@@ -28,7 +28,8 @@ class InputBinder:
             name
             for name, p in sig.parameters.items()
             if p.default is inspect.Parameter.empty
-            and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and p.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         ]
 
     @staticmethod
@@ -40,7 +41,11 @@ class InputBinder:
         if len(params) == 1:
             p = params[0]
             ann = hints.get(p.name, p.annotation)
-            if BaseModel is not None and isinstance(ann, type) and issubclass(ann, BaseModel):
+            if (
+                BaseModel is not None
+                and isinstance(ann, type)
+                and issubclass(ann, BaseModel)
+            ):
                 return "model", ann
             if ann is inspect.Parameter.empty or ann is Any or ann is dict:
                 return "raw", None

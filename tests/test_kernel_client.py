@@ -28,7 +28,9 @@ def client(captured):
         captured["request"] = request
         captured["body"] = request.content
         if request.url.path.endswith("/steps"):
-            return httpx.Response(200, json={"decision": "proceed", "step_id": "sid123"})
+            return httpx.Response(
+                200, json={"decision": "proceed", "step_id": "sid123"}
+            )
         return httpx.Response(200, json={"decision": "recorded"})
 
     transport = httpx.MockTransport(handler)
@@ -74,9 +76,13 @@ async def test_stream_delta_posts_seq_and_data(client, captured):
 
 async def test_conflict_maps_to_api_error():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(409, json={"code": "conflict", "message": "already exists"})
+        return httpx.Response(
+            409, json={"code": "conflict", "message": "already exists"}
+        )
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://k")
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://k"
+    )
     client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
     with pytest.raises(APIError) as exc_info:
         await client.get_execution("e1")

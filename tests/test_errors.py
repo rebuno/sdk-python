@@ -29,7 +29,9 @@ def test_policy_error_reason():
 
 def test_error_from_response_maps_known_codes():
     assert isinstance(error_from_response("not_found", "x", 404), NotFoundError)
-    assert isinstance(error_from_response("validation_error", "x", 400), ValidationError)
+    assert isinstance(
+        error_from_response("validation_error", "x", 400), ValidationError
+    )
     assert isinstance(error_from_response("unauthorized", "x", 401), UnauthorizedError)
     assert isinstance(error_from_response("forbidden", "x", 403), ForbiddenError)
     assert isinstance(error_from_response("conflict", "x", 409), APIError)

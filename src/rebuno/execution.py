@@ -8,7 +8,14 @@ from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
 from typing import Any, TypeVar
 
-from rebuno.errors import Blocked, PolicyError, RateLimited, RebunoError, Terminated, ToolError
+from rebuno.errors import (
+    Blocked,
+    PolicyError,
+    RateLimited,
+    RebunoError,
+    Terminated,
+    ToolError,
+)
 from rebuno.types import StepDecision
 
 logger = logging.getLogger("rebuno.execution")
@@ -47,7 +54,9 @@ class ExecutionContext:
         one the kernel client's connections are bound to."""
         if self._loop is None or asyncio.get_running_loop() is self._loop:
             return await coro
-        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        )
 
     async def _heartbeat_loop(self, interval: float) -> None:
         while True:
@@ -57,7 +66,9 @@ class ExecutionContext:
             except Exception:
                 logger.warning("dispatch heartbeat failed", exc_info=True)
 
-    async def _submit(self, *, kind: str, target: str, args: Any, idempotency: str) -> tuple[str, StepDecision]:
+    async def _submit(
+        self, *, kind: str, target: str, args: Any, idempotency: str
+    ) -> tuple[str, StepDecision]:
         """Ask the kernel to decide this effect, and return ``(step_id, decision)``.
 
         The kernel assigns the step id: it counts occurrences of this effect within
@@ -114,17 +125,23 @@ class ExecutionContext:
 
         ``kind`` is the step kind the kernel records and policy matches on.
         """
-        step_id, dec = await self._submit(kind=kind, target=target, args=args, idempotency=idempotency)
+        step_id, dec = await self._submit(
+            kind=kind, target=target, args=args, idempotency=idempotency
+        )
 
         if dec.decision == "replay":
             if dec.error is not None:
-                raise ToolError(_error_message(dec.error), tool_id=target, step_id=step_id)
+                raise ToolError(
+                    _error_message(dec.error), tool_id=target, step_id=step_id
+                )
             return dec.result
         self._raise_for_decision(dec)
 
         # proceed: run the body, record the outcome.
         if run is None:
-            await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=None))
+            await self._on_owner_loop(
+                self._kernel.complete_step(self.id, step_id, result=None)
+            )
             return None
         try:
             result = run()
@@ -137,7 +154,9 @@ class ExecutionContext:
             if isinstance(e, ToolError):
                 raise
             raise ToolError(str(e), tool_id=target, step_id=step_id) from e
-        await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=result))
+        await self._on_owner_loop(
+            self._kernel.complete_step(self.id, step_id, result=result)
+        )
         return result
 
     async def begin_llm(self, target: str, request: Any) -> tuple[str, StepDecision]:
@@ -148,7 +167,9 @@ class ExecutionContext:
         ``decision.result``). Any other decision raises the matching control-flow
         error.
         """
-        step_id, dec = await self._submit(kind="llm_call", target=target, args=request, idempotency="safe_to_retry")
+        step_id, dec = await self._submit(
+            kind="llm_call", target=target, args=request, idempotency="safe_to_retry"
+        )
         if dec.decision == "replay":
             if dec.error is not None:
                 raise RebunoError(_error_message(dec.error))
@@ -160,13 +181,19 @@ class ExecutionContext:
         """Publish a live delta for an in-flight streamed step. Best-effort:
         failures are logged and swallowed."""
         try:
-            await self._on_owner_loop(self._kernel.stream_delta(self.id, step_id, seq=seq, data=data))
+            await self._on_owner_loop(
+                self._kernel.stream_delta(self.id, step_id, seq=seq, data=data)
+            )
         except Exception:
-            logger.debug("stream delta publish failed for step_id=%s", step_id, exc_info=True)
+            logger.debug(
+                "stream delta publish failed for step_id=%s", step_id, exc_info=True
+            )
 
     async def record_llm(self, step_id: str, result: Any) -> None:
         """Record the assembled streamed response as the step's durable result."""
-        await self._on_owner_loop(self._kernel.complete_step(self.id, step_id, result=result))
+        await self._on_owner_loop(
+            self._kernel.complete_step(self.id, step_id, result=result)
+        )
 
     def start_heartbeat(self, interval: float = 30.0) -> asyncio.Task:
         """Start a background lease-renewal task and return it. The caller must
@@ -193,7 +220,9 @@ class ExecutionContext:
 
     async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
         try:
-            await self._on_owner_loop(self._kernel.fail_step(self.id, step_id, error={"message": str(error)}))
+            await self._on_owner_loop(
+                self._kernel.fail_step(self.id, step_id, error={"message": str(error)})
+            )
         except Exception:
             logger.exception("failed to record step failure for step_id=%s", step_id)
 
@@ -204,7 +233,9 @@ def _error_message(error: Any) -> str:
     return str(error)
 
 
-_current: ContextVar[ExecutionContext | None] = ContextVar("rebuno_execution", default=None)
+_current: ContextVar[ExecutionContext | None] = ContextVar(
+    "rebuno_execution", default=None
+)
 
 
 class _ExecutionAccessor:
@@ -217,7 +248,9 @@ class _ExecutionAccessor:
         return state
 
     def __getattr__(self, name: str) -> Any:
-        raise AttributeError(f"rebuno.execution is called, not read — use execution().{name}")
+        raise AttributeError(
+            f"rebuno.execution is called, not read — use execution().{name}"
+        )
 
 
 execution = _ExecutionAccessor()

@@ -22,7 +22,9 @@ class KernelClient:
     def _sign(self, body: bytes) -> str:
         return "sha256=" + hmac.new(self._secret, body, hashlib.sha256).hexdigest()
 
-    def _headers(self, body: bytes, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def _headers(
+        self, body: bytes, extra: dict[str, str] | None = None
+    ) -> dict[str, str]:
         h = {
             "Content-Type": "application/json",
             "Rebuno-Agent-Id": self._agent_id,
@@ -32,8 +34,12 @@ class KernelClient:
             h.update(extra)
         return h
 
-    async def _send(self, method: str, path: str, body: bytes, extra: dict[str, str] | None = None) -> httpx.Response:
-        resp = await self._http.request(method, path, content=body, headers=self._headers(body, extra))
+    async def _send(
+        self, method: str, path: str, body: bytes, extra: dict[str, str] | None = None
+    ) -> httpx.Response:
+        resp = await self._http.request(
+            method, path, content=body, headers=self._headers(body, extra)
+        )
         if resp.status_code >= 400:
             raise self._error(resp)
         return resp
@@ -46,7 +52,9 @@ class KernelClient:
             data = {}
         code = data.get("code", "internal_error")
         message = data.get("message", resp.text or "request failed")
-        return error_from_response(code, message, resp.status_code, rule_id=data.get("rule_id", ""))
+        return error_from_response(
+            code, message, resp.status_code, rule_id=data.get("rule_id", "")
+        )
 
     async def get_execution(self, execution_id: str) -> Execution:
         resp = await self._send("GET", f"/v0/executions/{execution_id}", b"")
@@ -54,31 +62,55 @@ class KernelClient:
 
     async def get_step(self, execution_id: str, step_id: str) -> Step | None:
         try:
-            resp = await self._send("GET", f"/v0/executions/{execution_id}/steps/{step_id}", b"")
+            resp = await self._send(
+                "GET", f"/v0/executions/{execution_id}/steps/{step_id}", b""
+            )
         except NotFoundError:
             return None
         return Step.model_validate(resp.json())
 
     async def submit_step(
-        self, execution_id: str, *, dispatch_id: str, kind: str, target: str, args: Any, idempotency: str
+        self,
+        execution_id: str,
+        *,
+        dispatch_id: str,
+        kind: str,
+        target: str,
+        args: Any,
+        idempotency: str,
     ) -> StepDecision:
-        body = json.dumps({"kind": kind, "target": target, "args": args, "idempotency": idempotency}).encode("utf-8")
+        body = json.dumps(
+            {"kind": kind, "target": target, "args": args, "idempotency": idempotency}
+        ).encode("utf-8")
         resp = await self._send(
-            "POST", f"/v0/executions/{execution_id}/steps", body, {"Rebuno-Dispatch-Id": dispatch_id}
+            "POST",
+            f"/v0/executions/{execution_id}/steps",
+            body,
+            {"Rebuno-Dispatch-Id": dispatch_id},
         )
         return StepDecision.model_validate(resp.json())
 
-    async def complete_step(self, execution_id: str, step_id: str, *, result: Any) -> None:
+    async def complete_step(
+        self, execution_id: str, step_id: str, *, result: Any
+    ) -> None:
         body = json.dumps({"result": result}).encode("utf-8")
-        await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/complete", body)
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/complete", body
+        )
 
     async def fail_step(self, execution_id: str, step_id: str, *, error: Any) -> None:
         body = json.dumps({"error": error}).encode("utf-8")
-        await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/fail", body)
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/fail", body
+        )
 
-    async def stream_delta(self, execution_id: str, step_id: str, *, seq: int, data: str) -> None:
+    async def stream_delta(
+        self, execution_id: str, step_id: str, *, seq: int, data: str
+    ) -> None:
         body = json.dumps({"seq": seq, "data": data}).encode("utf-8")
-        await self._send("POST", f"/v0/executions/{execution_id}/steps/{step_id}/stream", body)
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/stream", body
+        )
 
     async def heartbeat(self, execution_id: str) -> None:
         """Renew the dispatch lease while a long effect body runs (empty signed body)."""

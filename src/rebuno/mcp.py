@@ -22,7 +22,10 @@ def wrap_mcp_tools(
     See :func:`wrap_mcp_tool` for the per-tool behaviour and arguments.
     """
     return [
-        wrap_mcp_tool(d, call=call, prefix=prefix, idempotency=idempotency, to_result=to_result) for d in descriptors
+        wrap_mcp_tool(
+            d, call=call, prefix=prefix, idempotency=idempotency, to_result=to_result
+        )
+        for d in descriptors
     ]
 
 
@@ -101,7 +104,9 @@ def _default_flatten(raw: Any) -> Any:
 
     content = getattr(raw, "content", None)
     if content is not None:
-        texts = [b.text if getattr(b, "type", None) == "text" else str(b) for b in content]
+        texts = [
+            b.text if getattr(b, "type", None) == "text" else str(b) for b in content
+        ]
         return texts[0] if len(texts) == 1 else "\n".join(texts)
 
     return raw

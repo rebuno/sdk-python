@@ -30,4 +30,6 @@ async def step(
     if ctx is None:
         raise RuntimeError(f"rebuno.step('{name}') called outside an active execution.")
     payload = args or {}
-    return await ctx.invoke_tool(name, payload, idempotency=idempotency, run=lambda: fn(**payload), kind="local")
+    return await ctx.invoke_tool(
+        name, payload, idempotency=idempotency, run=lambda: fn(**payload), kind="local"
+    )

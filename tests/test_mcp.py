@@ -13,15 +13,24 @@ class FakeKernel:
         self.decision = decision
         self.completed = []
 
-    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
-        self.captured = dict(kind=kind, target=target, args=args, idempotency=idempotency)
+    async def submit_step(
+        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+    ):
+        self.captured = dict(
+            kind=kind, target=target, args=args, idempotency=idempotency
+        )
         return self.decision
 
     async def complete_step(self, execution_id, step_id, *, result):
         self.completed.append(result)
 
 
-def descriptor(name="get_weather", description="Get weather", required=("city",), optional=("units",)):
+def descriptor(
+    name="get_weather",
+    description="Get weather",
+    required=("city",),
+    optional=("units",),
+):
     props = {p: {"type": "string"} for p in (*required, *optional)}
     return SimpleNamespace(
         name=name,
@@ -39,7 +48,11 @@ def make_call(record):
 
 
 def install_context(kernel):
-    return _set_current(ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None))
+    return _set_current(
+        ExecutionContext(
+            kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+        )
+    )
 
 
 async def test_wrap_routes_through_invoke_tool_with_prefix():
@@ -138,7 +151,11 @@ async def test_wrap_accepts_dict_descriptor():
     desc = {
         "name": "search",
         "description": "Search",
-        "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]},
+        "inputSchema": {
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        },
     }
     fn = wrap_mcp_tool(desc, call=make_call([]), prefix="db")
     token = install_context(k)
@@ -160,7 +177,9 @@ async def test_default_flatten_prefers_structured_content():
     k = FakeKernel(StepDecision(decision="proceed"))
 
     async def call(name, args):
-        return SimpleNamespace(structured_content={"temp": 12}, content=[], data=object())
+        return SimpleNamespace(
+            structured_content={"temp": 12}, content=[], data=object()
+        )
 
     fn = wrap_mcp_tool(descriptor(), call=call, prefix="w")
     token = install_context(k)
@@ -210,7 +229,10 @@ async def test_default_flatten_single_text_block_unwrapped():
     k = FakeKernel(StepDecision(decision="proceed"))
 
     async def call(name, args):
-        return SimpleNamespace(structured_content=None, content=[SimpleNamespace(type="text", text="just one")])
+        return SimpleNamespace(
+            structured_content=None,
+            content=[SimpleNamespace(type="text", text="just one")],
+        )
 
     fn = wrap_mcp_tool(descriptor(), call=call)
     token = install_context(k)
@@ -253,7 +275,10 @@ async def test_to_result_override_applied_before_recording():
 
 
 async def test_wrap_mcp_tools_wraps_each_descriptor():
-    descs = [descriptor(name="a", required=("x",), optional=()), descriptor(name="b", required=(), optional=("y",))]
+    descs = [
+        descriptor(name="a", required=("x",), optional=()),
+        descriptor(name="b", required=(), optional=("y",)),
+    ]
     fns = wrap_mcp_tools(descs, call=make_call([]), prefix="srv")
     assert [f.__name__ for f in fns] == ["srv_a", "srv_b"]
     assert all(callable(f) for f in fns)

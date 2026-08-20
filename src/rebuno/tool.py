@@ -124,7 +124,9 @@ def _signature_from_schema(schema: dict[str, Any]) -> inspect.Signature:
     return inspect.Signature(params)
 
 
-def _build_wrapper(tool_id: str, fn: Callable[..., Any], idempotency: str) -> Callable[..., Any]:
+def _build_wrapper(
+    tool_id: str, fn: Callable[..., Any], idempotency: str
+) -> Callable[..., Any]:
     sig = inspect.signature(fn)
 
     @functools.wraps(fn)
@@ -140,7 +142,10 @@ def _build_wrapper(tool_id: str, fn: Callable[..., Any], idempotency: str) -> Ca
         arguments = dict(bound.arguments)
         try:
             return await ctx.invoke_tool(
-                tool_id, arguments, idempotency=idempotency, run=lambda: fn(*bound.args, **bound.kwargs)
+                tool_id,
+                arguments,
+                idempotency=idempotency,
+                run=lambda: fn(*bound.args, **bound.kwargs),
             )
         except PolicyError as refusal:
             return _refusal_result(tool_id, refusal)

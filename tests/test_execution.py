@@ -17,7 +17,9 @@ class FakeKernel:
         self.failed = []
         self.submits = []
 
-    async def submit_step(self, execution_id, *, dispatch_id, kind, target, args, idempotency):
+    async def submit_step(
+        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+    ):
         self.submits.append((dispatch_id, kind, target, args))
         dec = self.decisions.pop(0)
         if not dec.step_id and dec.decision in ("proceed", "replay"):
@@ -32,7 +34,9 @@ class FakeKernel:
 
 
 def ctx(kernel):
-    return ExecutionContext(kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input={"x": 1})
+    return ExecutionContext(
+        kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input={"x": 1}
+    )
 
 
 async def test_proceed_runs_body_and_completes():
@@ -80,9 +84,13 @@ async def test_blocked_raises_blocked():
 
 async def test_rate_limited_and_terminal():
     with pytest.raises(RateLimited):
-        await ctx(FakeKernel([StepDecision(decision="rate_limited", reason="rl")])).invoke_tool("t", {}, run=None)
+        await ctx(
+            FakeKernel([StepDecision(decision="rate_limited", reason="rl")])
+        ).invoke_tool("t", {}, run=None)
     with pytest.raises(Terminated):
-        await ctx(FakeKernel([StepDecision(decision="execution_terminal")])).invoke_tool("t", {}, run=None)
+        await ctx(
+            FakeKernel([StepDecision(decision="execution_terminal")])
+        ).invoke_tool("t", {}, run=None)
 
 
 async def test_body_exception_reports_fail_and_reraises():
@@ -204,7 +212,9 @@ async def test_kernel_calls_from_a_second_loop_run_on_the_owner_loop():
         body_loops.append(asyncio.get_running_loop())
         return {"echo": "hi"}
 
-    out = await asyncio.to_thread(lambda: asyncio.run(c.invoke_tool("search", {"q": "hi"}, run=body)))
+    out = await asyncio.to_thread(
+        lambda: asyncio.run(c.invoke_tool("search", {"q": "hi"}, run=body))
+    )
     assert out == {"echo": "hi"}
     assert k.loops == [owner, owner]
     assert body_loops[0] is not owner

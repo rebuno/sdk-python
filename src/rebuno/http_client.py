@@ -28,7 +28,9 @@ _REFUSALS: dict[type[RebunoError], tuple[int, str]] = {
 
 _DELTA_FLUSH_BYTES = 2000
 _DELTA_FLUSH_INTERVAL = 0.05
-_DELTA_MAX_CHARS = 1750  # the kernel caps a delta at 7000 bytes; UTF-8 runs to 4 bytes a char
+_DELTA_MAX_CHARS = (
+    1750  # the kernel caps a delta at 7000 bytes; UTF-8 runs to 4 bytes a char
+)
 
 
 class RebunoTransport(httpx.AsyncBaseTransport):
@@ -63,10 +65,17 @@ class RebunoTransport(httpx.AsyncBaseTransport):
             return _replay_response(request, dec.result)
 
         resp = await self._inner.handle_async_request(request)
-        if resp.status_code < 400 and _is_event_stream(resp.headers.get("content-type", "")):
+        if resp.status_code < 400 and _is_event_stream(
+            resp.headers.get("content-type", "")
+        ):
             content_type = resp.headers.get("content-type", "text/event-stream")
             tee = _TeeStream(ctx, step_id, resp, content_type)
-            return httpx.Response(resp.status_code, headers={"content-type": content_type}, stream=tee, request=request)
+            return httpx.Response(
+                resp.status_code,
+                headers={"content-type": content_type},
+                stream=tee,
+                request=request,
+            )
 
         # Whole response (including error statuses): read it, record it, and hand
         # back a reconstructed response.
@@ -77,7 +86,9 @@ class RebunoTransport(httpx.AsyncBaseTransport):
             raise
         record = {
             "status": resp.status_code,
-            "headers": {"content-type": resp.headers.get("content-type", "application/json")},
+            "headers": {
+                "content-type": resp.headers.get("content-type", "application/json")
+            },
             "body": resp.text,
         }
         await ctx.record_llm(step_id, record)
@@ -96,7 +107,13 @@ class _TeeStream(httpx.AsyncByteStream):
     EOF, or the consumer closing the response. A mid-stream error fails the step.
     """
 
-    def __init__(self, ctx: ExecutionContext, step_id: str, resp: httpx.Response, content_type: str):
+    def __init__(
+        self,
+        ctx: ExecutionContext,
+        step_id: str,
+        resp: httpx.Response,
+        content_type: str,
+    ):
         self._ctx = ctx
         self._step_id = step_id
         self._resp = resp
@@ -114,13 +131,18 @@ class _TeeStream(httpx.AsyncByteStream):
                 # Accumulate before yielding: a consumer that breaks right after
                 # receiving a chunk never resumes us, so recording after the yield
                 # would drop that chunk from the result.
-                text = self._decoder.decode(raw)  # incremental: never splits a UTF-8 char
+                text = self._decoder.decode(
+                    raw
+                )  # incremental: never splits a UTF-8 char
                 if text:
                     self._chunks.append(text)
                     self._pending += text
                 yield raw  # live to the caller
                 now = time.monotonic()
-                if len(self._pending) >= _DELTA_FLUSH_BYTES or (now - last_flush) >= _DELTA_FLUSH_INTERVAL:
+                if (
+                    len(self._pending) >= _DELTA_FLUSH_BYTES
+                    or (now - last_flush) >= _DELTA_FLUSH_INTERVAL
+                ):
                     await self._flush()
                     last_flush = now
         except Exception as e:
@@ -159,7 +181,9 @@ class _TeeStream(httpx.AsyncByteStream):
 
     async def _flush(self) -> None:
         for i in range(0, len(self._pending), _DELTA_MAX_CHARS):
-            await self._ctx.publish_llm_delta(self._step_id, self._seq, self._pending[i : i + _DELTA_MAX_CHARS])
+            await self._ctx.publish_llm_delta(
+                self._step_id, self._seq, self._pending[i : i + _DELTA_MAX_CHARS]
+            )
             self._seq += 1
         self._pending = ""
 
@@ -198,7 +222,11 @@ def _refusal_response(request: httpx.Request, e: RebunoError) -> httpx.Response:
     # Exception.__str__ skips APIError's display formatting.
     reason = Exception.__str__(e) if isinstance(e, (PolicyError, RateLimited)) else ""
     message = refusal_message(decision, reason)
-    return httpx.Response(status, json={"error": {"type": REFUSAL_TYPE, "message": message}}, request=request)
+    return httpx.Response(
+        status,
+        json={"error": {"type": REFUSAL_TYPE, "message": message}},
+        request=request,
+    )
 
 
 def _is_event_stream(content_type: str) -> bool:
@@ -243,14 +271,24 @@ def _stream_response_from_record(request: httpx.Request, record: Any) -> httpx.R
     """Like :func:`_response_from_record`, but delivers the recorded body as a
     stream so a replayed streaming call still yields a streaming response."""
     status, headers, content = _record_parts(record)
-    return httpx.Response(status, headers=headers, stream=_BytesStream(content), request=request)
+    return httpx.Response(
+        status, headers=headers, stream=_BytesStream(content), request=request
+    )
 
 
 def _record_parts(record: Any) -> tuple[int, dict[str, str], bytes]:
     if not isinstance(record, dict):
-        return 200, {"content-type": "application/json"}, json.dumps(record).encode("utf-8")
+        return (
+            200,
+            {"content-type": "application/json"},
+            json.dumps(record).encode("utf-8"),
+        )
     status = int(record.get("status", 200))
     headers = record.get("headers") or {"content-type": "application/json"}
     body = record.get("body", "")
-    content = body.encode("utf-8") if isinstance(body, str) else json.dumps(body).encode("utf-8")
+    content = (
+        body.encode("utf-8")
+        if isinstance(body, str)
+        else json.dumps(body).encode("utf-8")
+    )
     return status, headers, content
