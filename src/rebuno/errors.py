@@ -101,15 +101,14 @@ class RateLimited(RebunoError):
 
 
 class Blocked(RebunoError):
-    """Internal control-flow signal: a step is awaiting human approval.
+    """Internal control-flow signal: the kernel suspended the step.
 
     Raised inside a tool call to unwind the dispatch cleanly; the agent's
-    webhook handler catches it and returns 200 (the execution is already
-    'blocked' in the kernel). Not normally seen by user code.
+    webhook handler catches it and returns 200. Not normally seen by user code.
     """
 
     def __init__(self) -> None:
-        super().__init__("execution blocked awaiting approval")
+        super().__init__("step blocked")
 
 
 class Terminated(RebunoError):
@@ -200,9 +199,9 @@ def failure_reason(exc: BaseException) -> str:
 
     Everything before the first colon is a stable token: a kernel reason
     (``policy_denied``, ``execution_token_budget_exceeded``, ``approval_timeout``,
-    ``indeterminate``, ``rate_limit_exceeded``, ``rate_limiter_unavailable``) or
-    one of ``tool_error``, ``agent_error``, ``input_invalid``. A rule's own prose
-    reason is not a token, so it follows ``policy_denied:``.
+    ``rate_limit_exceeded``, ``rate_limiter_unavailable``) or one of
+    ``tool_error``, ``agent_error``, ``input_invalid``. A rule's own prose reason
+    is not a token, so it follows ``policy_denied:``.
     """
     if isinstance(exc, PolicyError):
         # Exception.__str__ skips APIError's display formatting.
