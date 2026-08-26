@@ -127,7 +127,7 @@ async def test_tool_failure_reason_names_the_tool():
         )
         assert r.status_code == 200
         await agent.join()
-        assert k.failed == "send_email: indeterminate"
+        assert k.failed == "tool_error: send_email: indeterminate"
 
 
 async def test_rate_limited_fails_execution_cleanly():
@@ -376,3 +376,87 @@ async def test_gateway_denial_fails_the_execution():
         await agent.join()
         assert k.completed is None
         assert k.failed and "denied" in k.failed
+
+
+@pytest.mark.parametrize(
+    "raise_it,expected",
+    [
+        (
+            lambda: (_ for _ in ()).throw(ValueError("boom")),
+            "agent_error: ValueError: boom",
+        ),
+        (
+            lambda: (_ for _ in ()).throw(ToolError("nope", tool_id="send_email")),
+            "tool_error: send_email: nope",
+        ),
+    ],
+)
+async def test_failure_reason_vocabulary(raise_it, expected):
+    async def proc(prompt: str):
+        raise_it()
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed == expected
+
+
+async def test_failure_reason_for_bad_input():
+    async def proc(prompt: str): ...
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"wrong_field": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed.startswith("input_invalid: ")
+
+
+async def test_denied_llm_call_records_the_kernel_reason():
+    import httpx
+
+    from rebuno.errors import REFUSAL_TYPE
+    from rebuno.http_client import RebunoTransport
+
+    REASON = "fs_write not allowed outside /tmp"
+
+    class DenyingKernel(FakeKernel):
+        async def submit_step(self, execution_id, **kw):
+            from rebuno.types import StepDecision
+
+            return StepDecision(decision="denied", reason=REASON)
+
+    def provider(request):
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async def proc(prompt: str):
+        async with httpx.AsyncClient(
+            transport=RebunoTransport(httpx.MockTransport(provider))
+        ) as c:
+            r = await c.post("http://llm/v1/chat", json={"model": "m"})
+            raise RuntimeError(f"Error code: 403 - {r.json()}")
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = DenyingKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        body = webhook_body()
+        r = await client.post(
+            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
+        )
+        assert r.status_code == 200
+        await agent.join()
+        assert k.failed == f"policy_denied: {REASON}"
+        assert REFUSAL_TYPE not in k.failed

@@ -21,6 +21,7 @@ from rebuno.errors import (
     RateLimited,
     Terminated,
     ToolError,
+    failure_reason,
     raise_for_refusal,
 )
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
@@ -132,7 +133,9 @@ class Agent:
             try:
                 kwargs = self._binder.bind(exec.input)
             except ValueError as e:
-                await self._kernel.fail_execution(execution_id, error=str(e))
+                await self._kernel.fail_execution(
+                    execution_id, error=f"input_invalid: {e}"
+                )
                 return
             try:
                 async with ctx.lease():
@@ -154,7 +157,7 @@ class Agent:
                     e = refused
                 if not isinstance(e, (PolicyError, ToolError, RateLimited)):
                     logger.exception("process error: execution_id=%s", execution_id)
-                await self._kernel.fail_execution(execution_id, error=str(e))
+                await self._kernel.fail_execution(execution_id, error=failure_reason(e))
                 return
             await self._kernel.complete_execution(execution_id, output=output)
         finally:

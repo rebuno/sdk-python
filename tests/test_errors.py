@@ -49,3 +49,21 @@ def test_error_from_response_unknown_code_falls_back_to_api_error():
     assert not isinstance(err, (NotFoundError, ValidationError, UnauthorizedError))
     assert err.code == "something_new"
     assert err.status_code == 500
+
+
+def test_refusal_reason_stops_at_the_marker_line():
+    from rebuno.errors import PolicyError, raise_for_refusal, refusal_message
+
+    body = {
+        "error": {
+            "type": "rebuno_refusal",
+            "message": refusal_message("denied", "budget_gone"),
+        }
+    }
+    provider = Exception(f"Error code: 403 - {body}\n\nRequest ID: req_abc123")
+    try:
+        raise_for_refusal(provider)
+    except PolicyError as e:
+        assert Exception.__str__(e) == "budget_gone"
+    else:
+        raise AssertionError("expected PolicyError")

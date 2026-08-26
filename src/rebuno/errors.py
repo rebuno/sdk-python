@@ -121,7 +121,11 @@ class Terminated(RebunoError):
 
 REFUSAL_TYPE = "rebuno_refusal"
 
-_REFUSAL_RE = re.compile(rf"{REFUSAL_TYPE}: (\w+)")
+_REFUSAL_RE = re.compile(rf"{REFUSAL_TYPE}: (\w+)(?: reason=(.*))?")
+
+_TOKEN_RE = re.compile(r"[a-z0-9_]+")
+
+_DEFAULT_REASON = {"denied": "policy_denied", "rate_limited": "rate_limit_exceeded"}
 
 
 def refusal_message(decision: str, reason: str = "") -> str:
@@ -145,14 +149,17 @@ def raise_for_refusal(exc: BaseException) -> None:
         if not m:
             continue
         decision = m.group(1)
+        reason = (m.group(2) or "").rstrip("'\"} \n") or _DEFAULT_REASON.get(
+            decision, decision
+        )
         if decision in ("blocked", "execution_blocked"):
             raise Blocked from exc
         if decision == "execution_terminal":
-            raise Terminated(str(e)) from exc
+            raise Terminated(reason) from exc
         if decision == "denied":
-            raise PolicyError(str(e)) from exc
+            raise PolicyError(reason) from exc
         if decision == "rate_limited":
-            raise RateLimited(str(e)) from exc
+            raise RateLimited(reason) from exc
         return
 
 
@@ -186,3 +193,24 @@ def error_from_response(
         return PolicyError(message, rule_id=rule_id)
     cls = _ERROR_BY_CODE.get(code, APIError)
     return cls(message, code=code, status_code=status_code)
+
+
+def failure_reason(exc: BaseException) -> str:
+    """The text an execution's ``failure_reason`` records for ``exc``.
+
+    Everything before the first colon is a stable token: a kernel reason
+    (``policy_denied``, ``execution_token_budget_exceeded``, ``approval_timeout``,
+    ``indeterminate``, ``rate_limit_exceeded``, ``rate_limiter_unavailable``) or
+    one of ``tool_error``, ``agent_error``, ``input_invalid``. A rule's own prose
+    reason is not a token, so it follows ``policy_denied:``.
+    """
+    if isinstance(exc, PolicyError):
+        # Exception.__str__ skips APIError's display formatting.
+        reason = Exception.__str__(exc)
+        return reason if _TOKEN_RE.fullmatch(reason) else f"policy_denied: {reason}"
+    if isinstance(exc, RateLimited):
+        return str(exc)
+    if isinstance(exc, ToolError):
+        return f"tool_error: {exc}"
+    detail = Exception.__str__(exc) if isinstance(exc, APIError) else str(exc)
+    return f"agent_error: {type(exc).__name__}: {detail}"

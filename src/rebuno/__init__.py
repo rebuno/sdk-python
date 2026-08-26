@@ -28,6 +28,7 @@ from rebuno.errors import (
     ToolError,
     UnauthorizedError,
     ValidationError,
+    failure_reason,
     raise_for_refusal,
 )
 from rebuno.execution import execution
@@ -57,5 +58,6 @@ __all__ = [
     "RateLimited",
     "Blocked",
     "Terminated",
+    "failure_reason",
     "raise_for_refusal",
 ]
