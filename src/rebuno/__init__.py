@@ -7,7 +7,7 @@ Public surface:
   tool        — decorator registering an async function as a Rebuno tool
   wrap_tool   — route an arbitrary (non-decorator) tool through Rebuno
   step        — record non-deterministic local work as a durable step
-  http_client — an httpx client that records LLM calls as durable steps
+  http_client — an httpx2 client that records LLM calls as durable steps
   raise_for_refusal — turn a refused LLM call's provider error back into Blocked/PolicyError/...
   execution   — ambient accessor for the current ExecutionContext
 """

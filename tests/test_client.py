@@ -1,4 +1,4 @@
-import httpx
+import httpx2
 import pytest
 
 from rebuno.client import Client
@@ -7,9 +7,9 @@ from rebuno.types import Execution
 
 
 def make_client(handler):
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
     c = Client(base_url="http://k", api_key="tok")
-    c._http = httpx.AsyncClient(
+    c._http = httpx2.AsyncClient(
         transport=transport,
         base_url="http://k",
         headers={"Authorization": "Bearer tok"},
@@ -22,7 +22,7 @@ async def test_create_execution():
         assert req.method == "POST"
         assert req.url.path == "/v0/executions"
         assert req.headers["Authorization"] == "Bearer tok"
-        return httpx.Response(
+        return httpx2.Response(
             201, json={"id": "e1", "agent_id": "a", "status": "pending"}
         )
 
@@ -35,10 +35,10 @@ async def test_create_execution():
 async def test_cancel_and_approvals():
     def handler(req):
         if req.url.path.endswith("/cancel"):
-            return httpx.Response(204)
+            return httpx2.Response(204)
         if "/grant" in req.url.path:
-            return httpx.Response(204)
-        return httpx.Response(200, json=[])
+            return httpx2.Response(204)
+        return httpx2.Response(200, json=[])
 
     c = make_client(handler)
     await c.cancel("e1")
@@ -48,7 +48,7 @@ async def test_cancel_and_approvals():
 
 async def test_conflict_maps_to_api_error():
     def handler(req):
-        return httpx.Response(
+        return httpx2.Response(
             409, json={"code": "conflict", "message": "already exists"}
         )
 

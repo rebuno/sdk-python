@@ -14,7 +14,7 @@ authors = [
 ]
 
 dependencies = [
-    "httpx>=0.25.0",
+    "httpx2>=2.0.0,<3",
     "pydantic>=2.0.0",
     "fastapi>=0.139.0",
     "uvicorn[standard]>=0.51.0",
@@ -53,4 +53,3 @@ select = [
     "SIM",  # flake8-simplify
 ]
 ignore = ["E501"]
-

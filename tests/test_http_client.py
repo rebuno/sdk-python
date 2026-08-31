@@ -1,12 +1,12 @@
 import json
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 
 from rebuno.errors import Blocked, PolicyError, RateLimited, raise_for_refusal
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
-from rebuno.http_client import RebunoTransport
+from rebuno.http_client import RebunoTransport, http_client
 from rebuno.types import StepDecision
 
 
@@ -48,9 +48,9 @@ class StepKernel:
         self.deltas.append((step_id, seq, data))
 
 
-def _client(handler) -> httpx.AsyncClient:
-    transport = RebunoTransport(httpx.MockTransport(handler))
-    return httpx.AsyncClient(transport=transport, base_url="https://api.test")
+def _client(handler) -> httpx2.AsyncClient:
+    transport = RebunoTransport(httpx2.MockTransport(handler))
+    return httpx2.AsyncClient(transport=transport, base_url="https://api.test")
 
 
 def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
@@ -66,13 +66,18 @@ def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
 REQUEST = {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}
 
 
+async def test_http_client_returns_httpx2_client():
+    async with http_client() as client:
+        assert isinstance(client, httpx2.AsyncClient)
+
+
 async def test_llm_call_forwards_then_replays_on_resume():
     kernel = StepKernel()
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         calls["n"] += 1
-        return httpx.Response(200, json={"content": "hello", "n": calls["n"]})
+        return httpx2.Response(200, json={"content": "hello", "n": calls["n"]})
 
     # First dispatch: forwards to the provider and records an llm_call step.
     token = _set_current(_ctx(kernel))
@@ -118,7 +123,7 @@ async def test_refusal_is_an_http_status_the_caller_maps_back(
         ):
             return StepDecision(decision=decision, reason="nope")
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         raise AssertionError("provider must not be called")
 
     token = _set_current(_ctx(RefuseKernel()))
@@ -152,21 +157,21 @@ SSE = b'data: {"delta":"' + b"x" * 5000 + b'"}\n\ndata: [DONE]\n\n'
 
 
 def _sse_handler(calls: dict[str, int]):
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         calls["n"] += 1
 
         async def body():
             for i in range(0, len(SSE), 512):  # deliver in network-sized chunks
                 yield SSE[i : i + 512]
 
-        return httpx.Response(
+        return httpx2.Response(
             200, content=body(), headers={"content-type": "text/event-stream"}
         )
 
     return handler
 
 
-async def _drain_stream(client: httpx.AsyncClient, req: dict) -> bytes:
+async def _drain_stream(client: httpx2.AsyncClient, req: dict) -> bytes:
     got = b""
     async with client.stream("POST", "/v1/messages", json=req) as r:
         assert r.status_code == 200
@@ -241,12 +246,12 @@ async def test_streaming_midstream_error_not_recorded_as_success():
     # A stream that dies mid-flight must not be recorded as a succeeded step.
     kernel = StepKernel()
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         async def body():
             yield SSE[:512]
             raise RuntimeError("connection dropped mid-stream")
 
-        return httpx.Response(
+        return httpx2.Response(
             200, content=body(), headers={"content-type": "text/event-stream"}
         )
 
@@ -263,8 +268,8 @@ async def test_streaming_midstream_error_not_recorded_as_success():
 async def test_streaming_error_status_recorded_like_non_stream():
     kernel = StepKernel()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, json={"error": "rate limited"})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(429, json={"error": "rate limited"})
 
     token = _set_current(_ctx(kernel))
     try:
@@ -280,8 +285,8 @@ async def test_streaming_error_status_recorded_like_non_stream():
 async def test_passthrough_without_active_context():
     kernel = StepKernel()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"ok": True})
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"ok": True})
 
     async with _client(handler) as client:
         r = await client.post("/v1/messages", json=REQUEST)

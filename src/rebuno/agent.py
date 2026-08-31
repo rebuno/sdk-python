@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-import httpx
+import httpx2
 from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
@@ -57,7 +57,7 @@ class Agent:
         self.webhook_path = webhook_path
         self._process: Callable[..., Any] | None = None
         self._binder: InputBinder | None = None
-        self._http = httpx.AsyncClient(base_url=self.base_url, timeout=kernel_timeout)
+        self._http = httpx2.AsyncClient(base_url=self.base_url, timeout=kernel_timeout)
         self._kernel = KernelClient(
             agent_id=agent_id, secret=self.secret, http=self._http
         )

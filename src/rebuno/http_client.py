@@ -5,7 +5,7 @@ import json
 import time
 from typing import Any
 
-import httpx
+import httpx2
 
 from rebuno.errors import (
     REFUSAL_TYPE,
@@ -33,18 +33,18 @@ _DELTA_MAX_CHARS = (
 )
 
 
-class RebunoTransport(httpx.AsyncBaseTransport):
-    """An httpx transport that records LLM calls as durable Rebuno steps.
+class RebunoTransport(httpx2.AsyncBaseTransport):
+    """An httpx2 transport that records LLM calls as durable Rebuno steps.
 
-    Wrap a real transport (defaults to ``httpx.AsyncHTTPTransport``) and use it
-    in an ``httpx.AsyncClient``. The request body's ``model`` is the step
+    Wrap a real transport (defaults to ``httpx2.AsyncHTTPTransport``) and use it
+    in an ``httpx2.AsyncClient``. The request body's ``model`` is the step
     ``target``.
     """
 
-    def __init__(self, inner: httpx.AsyncBaseTransport | None = None):
-        self._inner = inner or httpx.AsyncHTTPTransport()
+    def __init__(self, inner: httpx2.AsyncBaseTransport | None = None):
+        self._inner = inner or httpx2.AsyncHTTPTransport()
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         ctx = _get_current()
         if ctx is None:
             return await self._inner.handle_async_request(request)
@@ -70,7 +70,7 @@ class RebunoTransport(httpx.AsyncBaseTransport):
         ):
             content_type = resp.headers.get("content-type", "text/event-stream")
             tee = _TeeStream(ctx, step_id, resp, content_type)
-            return httpx.Response(
+            return httpx2.Response(
                 resp.status_code,
                 headers={"content-type": content_type},
                 stream=tee,
@@ -98,7 +98,7 @@ class RebunoTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
-class _TeeStream(httpx.AsyncByteStream):
+class _TeeStream(httpx2.AsyncByteStream):
     """Streams the provider's bytes to the caller while accumulating the whole and
     publishing live deltas, then records the assembled response as the step result
     when the stream ends.
@@ -111,7 +111,7 @@ class _TeeStream(httpx.AsyncByteStream):
         self,
         ctx: ExecutionContext,
         step_id: str,
-        resp: httpx.Response,
+        resp: httpx2.Response,
         content_type: str,
     ):
         self._ctx = ctx
@@ -188,7 +188,7 @@ class _TeeStream(httpx.AsyncByteStream):
         self._pending = ""
 
 
-class _BytesStream(httpx.AsyncByteStream):
+class _BytesStream(httpx2.AsyncByteStream):
     """Replays fixed bytes as a stream, so a replayed streamed call still yields a
     streaming response the provider SDK can iterate."""
 
@@ -204,25 +204,25 @@ class _BytesStream(httpx.AsyncByteStream):
         pass
 
 
-def http_client(**kwargs: Any) -> httpx.AsyncClient:
-    """Return an ``httpx.AsyncClient`` that records LLM calls as durable steps.
+def http_client(**kwargs: Any) -> httpx2.AsyncClient:
+    """Return an ``httpx2.AsyncClient`` that records LLM calls as durable steps.
 
     Pass it to an async LLM client::
 
         llm = AsyncOpenAI(http_client=rebuno.http_client())
 
-    Keyword arguments are forwarded to ``httpx.AsyncClient`` (e.g. ``timeout``).
+    Keyword arguments are forwarded to ``httpx2.AsyncClient`` (e.g. ``timeout``).
     """
-    return httpx.AsyncClient(transport=RebunoTransport(), **kwargs)
+    return httpx2.AsyncClient(transport=RebunoTransport(), **kwargs)
 
 
-def _refusal_response(request: httpx.Request, e: RebunoError) -> httpx.Response:
+def _refusal_response(request: httpx2.Request, e: RebunoError) -> httpx2.Response:
     """A refused decision as an HTTP error carrying the refusal marker."""
     status, decision = _REFUSALS[type(e)]
     # Exception.__str__ skips APIError's display formatting.
     reason = Exception.__str__(e) if isinstance(e, (PolicyError, RateLimited)) else ""
     message = refusal_message(decision, reason)
-    return httpx.Response(
+    return httpx2.Response(
         status,
         json={"error": {"type": REFUSAL_TYPE, "message": message}},
         request=request,
@@ -234,7 +234,7 @@ def _is_event_stream(content_type: str) -> bool:
     return content_type.split(";", 1)[0].strip().lower() == "text/event-stream"
 
 
-def _json_body(request: httpx.Request) -> dict[str, Any] | None:
+def _json_body(request: httpx2.Request) -> dict[str, Any] | None:
     body = request.content
     if not body:
         return None
@@ -245,7 +245,7 @@ def _json_body(request: httpx.Request) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _replay_response(request: httpx.Request, record: Any) -> httpx.Response:
+def _replay_response(request: httpx2.Request, record: Any) -> httpx2.Response:
     """Rebuild a replayed response — as a stream when the recorded response was an
     event stream (so a replayed streamed call still yields a stream), otherwise as
     a whole response."""
@@ -256,22 +256,24 @@ def _replay_response(request: httpx.Request, record: Any) -> httpx.Response:
     return _response_from_record(request, record)
 
 
-def _response_from_record(request: httpx.Request, record: Any) -> httpx.Response:
-    """Rebuild an httpx.Response from a recorded provider response.
+def _response_from_record(request: httpx2.Request, record: Any) -> httpx2.Response:
+    """Rebuild an httpx2.Response from a recorded provider response.
 
     Only the status, content-type, and body are reconstructed — hop-by-hop and
     length/encoding headers are deliberately dropped so a replayed body is never
     mismatched against a stale ``content-encoding`` or ``content-length``.
     """
     status, headers, content = _record_parts(record)
-    return httpx.Response(status, headers=headers, content=content, request=request)
+    return httpx2.Response(status, headers=headers, content=content, request=request)
 
 
-def _stream_response_from_record(request: httpx.Request, record: Any) -> httpx.Response:
+def _stream_response_from_record(
+    request: httpx2.Request, record: Any
+) -> httpx2.Response:
     """Like :func:`_response_from_record`, but delivers the recorded body as a
     stream so a replayed streaming call still yields a streaming response."""
     status, headers, content = _record_parts(record)
-    return httpx.Response(
+    return httpx2.Response(
         status, headers=headers, stream=_BytesStream(content), request=request
     )
 

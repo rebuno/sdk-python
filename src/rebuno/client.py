@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import httpx
+import httpx2
 
 from rebuno.errors import NetworkError, error_from_response
 from rebuno.types import Approval, Event, Execution, Step
@@ -36,7 +36,7 @@ class Client:
         headers = {"User-Agent": USER_AGENT}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        self._http = httpx.AsyncClient(
+        self._http = httpx2.AsyncClient(
             base_url=self.base_url, headers=headers, timeout=timeout
         )
 
@@ -49,17 +49,17 @@ class Client:
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx2.Response:
         try:
             resp = await self._http.request(method, path, **kwargs)
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
+        except (httpx2.ConnectError, httpx2.TimeoutException) as e:
             raise NetworkError(str(e)) from e
         if resp.status_code >= 400:
             raise self._error(resp)
         return resp
 
     @staticmethod
-    def _error(resp: httpx.Response) -> Exception:
+    def _error(resp: httpx2.Response) -> Exception:
         try:
             data = resp.json()
         except Exception:

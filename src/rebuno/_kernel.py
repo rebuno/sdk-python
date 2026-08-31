@@ -5,7 +5,7 @@ import hmac
 import json
 from typing import Any
 
-import httpx
+import httpx2
 
 from rebuno.errors import NotFoundError, error_from_response
 from rebuno.types import Execution, Step, StepDecision
@@ -14,7 +14,7 @@ from rebuno.types import Execution, Step, StepDecision
 class KernelClient:
     """Agent-side kernel client. Signs every request body with the agent secret."""
 
-    def __init__(self, *, agent_id: str, secret: str, http: httpx.AsyncClient):
+    def __init__(self, *, agent_id: str, secret: str, http: httpx2.AsyncClient):
         self._agent_id = agent_id
         self._secret = secret.encode("utf-8")
         self._http = http
@@ -36,7 +36,7 @@ class KernelClient:
 
     async def _send(
         self, method: str, path: str, body: bytes, extra: dict[str, str] | None = None
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         resp = await self._http.request(
             method, path, content=body, headers=self._headers(body, extra)
         )
@@ -45,7 +45,7 @@ class KernelClient:
         return resp
 
     @staticmethod
-    def _error(resp: httpx.Response) -> Exception:
+    def _error(resp: httpx2.Response) -> Exception:
         try:
             data = resp.json()
         except Exception:
