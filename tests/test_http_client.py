@@ -158,7 +158,7 @@ async def test_a_superseded_lease_reaches_the_caller_as_a_refusal():
         ):
             raise LeaseSuperseded
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         raise AssertionError("provider must not be called")
 
     token = _set_current(_ctx(SupersededKernel()))
