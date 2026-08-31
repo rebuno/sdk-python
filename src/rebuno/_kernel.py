@@ -3,12 +3,31 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx2
 
 from rebuno.errors import NotFoundError, error_from_response
 from rebuno.types import Execution, Step, StepDecision
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchLease:
+    """The delivery attempt a webhook arrived under.
+
+    Every mutation sends it back, so the kernel refuses a handler whose dispatch
+    was reclaimed and re-delivered to a newer attempt.
+    """
+
+    dispatch_id: str
+    attempt: int
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "Rebuno-Dispatch-Id": self.dispatch_id,
+            "Rebuno-Dispatch-Attempt": str(self.attempt),
+        }
 
 
 class KernelClient:
@@ -73,7 +92,7 @@ class KernelClient:
         self,
         execution_id: str,
         *,
-        dispatch_id: str,
+        lease: DispatchLease,
         kind: str,
         target: str,
         args: Any,
@@ -83,25 +102,30 @@ class KernelClient:
             {"kind": kind, "target": target, "args": args, "idempotency": idempotency}
         ).encode("utf-8")
         resp = await self._send(
-            "POST",
-            f"/v0/executions/{execution_id}/steps",
-            body,
-            {"Rebuno-Dispatch-Id": dispatch_id},
+            "POST", f"/v0/executions/{execution_id}/steps", body, lease.headers()
         )
         return StepDecision.model_validate(resp.json())
 
     async def complete_step(
-        self, execution_id: str, step_id: str, *, result: Any
+        self, execution_id: str, step_id: str, *, lease: DispatchLease, result: Any
     ) -> None:
         body = json.dumps({"result": result}).encode("utf-8")
         await self._send(
-            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/complete", body
+            "POST",
+            f"/v0/executions/{execution_id}/steps/{step_id}/complete",
+            body,
+            lease.headers(),
         )
 
-    async def fail_step(self, execution_id: str, step_id: str, *, error: Any) -> None:
+    async def fail_step(
+        self, execution_id: str, step_id: str, *, lease: DispatchLease, error: Any
+    ) -> None:
         body = json.dumps({"error": error}).encode("utf-8")
         await self._send(
-            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/fail", body
+            "POST",
+            f"/v0/executions/{execution_id}/steps/{step_id}/fail",
+            body,
+            lease.headers(),
         )
 
     async def stream_delta(
@@ -112,14 +136,24 @@ class KernelClient:
             "POST", f"/v0/executions/{execution_id}/steps/{step_id}/stream", body
         )
 
-    async def heartbeat(self, execution_id: str) -> None:
+    async def heartbeat(self, execution_id: str, *, lease: DispatchLease) -> None:
         """Renew the dispatch lease while a long effect body runs (empty signed body)."""
-        await self._send("POST", f"/v0/executions/{execution_id}/heartbeat", b"")
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/heartbeat", b"", lease.headers()
+        )
 
-    async def complete_execution(self, execution_id: str, *, output: Any) -> None:
+    async def complete_execution(
+        self, execution_id: str, *, lease: DispatchLease, output: Any
+    ) -> None:
         body = json.dumps({"output": output}).encode("utf-8")
-        await self._send("POST", f"/v0/executions/{execution_id}/complete", body)
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/complete", body, lease.headers()
+        )
 
-    async def fail_execution(self, execution_id: str, *, error: str) -> None:
+    async def fail_execution(
+        self, execution_id: str, *, lease: DispatchLease, error: str
+    ) -> None:
         body = json.dumps({"error": error}).encode("utf-8")
-        await self._send("POST", f"/v0/executions/{execution_id}/fail", body)
+        await self._send(
+            "POST", f"/v0/executions/{execution_id}/fail", body, lease.headers()
+        )

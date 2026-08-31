@@ -8,15 +8,16 @@ import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx2
 from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
-from rebuno._kernel import KernelClient
+from rebuno._kernel import DispatchLease, KernelClient
 from rebuno.errors import (
     Blocked,
+    LeaseSuperseded,
     PolicyError,
     RateLimited,
     Terminated,
@@ -27,6 +28,11 @@ from rebuno.errors import (
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 
 logger = logging.getLogger("rebuno.agent")
+
+
+class _Running(NamedTuple):
+    lease: DispatchLease
+    task: asyncio.Task
 
 
 class Agent:
@@ -63,7 +69,8 @@ class Agent:
         )
         self._app: FastAPI | None = None
         self._closed = False
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, _Running] = {}
+        self._superseded: set[asyncio.Task] = set()
 
     def bind(self, process: Callable[..., Any]) -> None:
         self._process = process
@@ -93,16 +100,21 @@ class Agent:
             sig = request.headers.get("Rebuno-Signature", "")
             if not self._verify(raw, sig):
                 return Response(status_code=401)
-            payload = _safe_json(raw)
-            execution_id = (payload or {}).get("execution_id")
-            dispatch_id = (payload or {}).get("dispatch_id")
-            if not execution_id or not dispatch_id:
+            payload = _safe_json(raw) or {}
+            execution_id = payload.get("execution_id")
+            lease = _lease_from(payload)
+            if not execution_id or lease is None:
                 return Response(status_code=400)
-            previous = self._tasks.get(execution_id)
-            task = asyncio.create_task(
-                self._safe_handle(execution_id, dispatch_id, previous)
-            )
-            self._tasks[execution_id] = task
+            running = self._tasks.get(execution_id)
+            if running is not None:
+                if (
+                    lease.dispatch_id == running.lease.dispatch_id
+                    and lease.attempt <= running.lease.attempt
+                ):
+                    return Response(status_code=200)
+                self._supersede(running.task)
+            task = asyncio.create_task(self._safe_handle(execution_id, lease))
+            self._tasks[execution_id] = _Running(lease, task)
             task.add_done_callback(lambda t: self._discard(execution_id, t))
             return Response(status_code=200)
 
@@ -114,7 +126,7 @@ class Agent:
         expected = hmac.new(self.secret.encode(), raw, hashlib.sha256).hexdigest()
         return hmac.compare_digest(header[len("sha256=") :], expected)
 
-    async def _handle(self, execution_id: str, dispatch_id: str) -> None:
+    async def _handle(self, execution_id: str, lease: DispatchLease) -> None:
         assert self._process is not None and self._binder is not None
         exec = await self._kernel.get_execution(execution_id)
         if exec.status in ("completed", "failed", "cancelled"):
@@ -123,7 +135,7 @@ class Agent:
         ctx = ExecutionContext(
             kernel=self._kernel,
             execution_id=execution_id,
-            dispatch_id=dispatch_id,
+            lease=lease,
             agent_id=self.agent_id,
             input=exec.input,
             status=exec.status,
@@ -134,7 +146,7 @@ class Agent:
                 kwargs = self._binder.bind(exec.input)
             except ValueError as e:
                 await self._kernel.fail_execution(
-                    execution_id, error=f"input_invalid: {e}"
+                    execution_id, lease=lease, error=f"input_invalid: {e}"
                 )
                 return
             try:
@@ -144,7 +156,7 @@ class Agent:
                         output = await output
                 if ctx.suspension is not None:
                     raise ctx.suspension
-            except (Blocked, Terminated):
+            except (Blocked, Terminated, LeaseSuperseded):
                 raise
             except Exception as e:
                 if ctx.suspension is not None:
@@ -157,48 +169,61 @@ class Agent:
                     e = refused
                 if not isinstance(e, (PolicyError, ToolError, RateLimited)):
                     logger.exception("process error: execution_id=%s", execution_id)
-                await self._kernel.fail_execution(execution_id, error=failure_reason(e))
+                await self._kernel.fail_execution(
+                    execution_id, lease=lease, error=failure_reason(e)
+                )
                 return
-            await self._kernel.complete_execution(execution_id, output=output)
+            await self._kernel.complete_execution(
+                execution_id, lease=lease, output=output
+            )
         finally:
             _reset_current(token)
 
     def _discard(self, execution_id: str, task: asyncio.Task) -> None:
-        if self._tasks.get(execution_id) is task:
+        running = self._tasks.get(execution_id)
+        if running is not None and running.task is task:
             del self._tasks[execution_id]
 
-    async def _safe_handle(
-        self, execution_id: str, dispatch_id: str, previous: asyncio.Task | None = None
-    ) -> None:
-        if previous is not None:
-            previous.cancel()
-            await asyncio.gather(previous, return_exceptions=True)
+    def _supersede(self, task: asyncio.Task) -> None:
+        """Cancel a replaced handler without waiting on it."""
+        task.cancel()
+        self._superseded.add(task)
+        task.add_done_callback(self._superseded.discard)
+
+    async def _safe_handle(self, execution_id: str, lease: DispatchLease) -> None:
         try:
-            await self._handle(execution_id, dispatch_id)
-        except (Blocked, Terminated):
+            await self._handle(execution_id, lease)
+        except (Blocked, Terminated, LeaseSuperseded):
             pass
         except Exception:
             logger.exception("unhandled error handling execution %s", execution_id)
 
+    def _all_tasks(self) -> list[asyncio.Task]:
+        return [r.task for r in self._tasks.values()] + list(self._superseded)
+
     async def join(self) -> None:
         """Wait for all in-flight execution handlers to finish (best-effort)."""
-        if self._tasks:
-            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        tasks = self._all_tasks()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
             self._tasks.clear()
+            self._superseded.clear()
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for task in self._tasks.values():
+        tasks = self._all_tasks()
+        for task in tasks:
             if not task.done():
                 task.cancel()
-        if self._tasks:
+        if tasks:
             try:
-                await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
             except Exception:
                 logger.debug("ignoring task cleanup error during close", exc_info=True)
             self._tasks.clear()
+            self._superseded.clear()
         try:
             await self._http.aclose()
         except RuntimeError:
@@ -221,6 +246,16 @@ class Agent:
 
 def _safe_json(raw: bytes) -> dict[str, Any] | None:
     try:
-        return json.loads(raw)
+        payload = json.loads(raw)
     except Exception:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _lease_from(payload: dict[str, Any]) -> DispatchLease | None:
+    """The lease a webhook carries, or None if it is unusable."""
+    dispatch_id = payload.get("dispatch_id")
+    attempt = payload.get("dispatch_attempt")
+    if not dispatch_id or type(attempt) is not int or attempt <= 0:
+        return None
+    return DispatchLease(dispatch_id, attempt)

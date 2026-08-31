@@ -10,6 +10,7 @@ import httpx2
 from rebuno.errors import (
     REFUSAL_TYPE,
     Blocked,
+    LeaseSuperseded,
     PolicyError,
     RateLimited,
     RebunoError,
@@ -24,6 +25,7 @@ _REFUSALS: dict[type[RebunoError], tuple[int, str]] = {
     PolicyError: (403, "denied"),
     RateLimited: (429, "rate_limited"),
     Terminated: (403, "execution_terminal"),
+    LeaseSuperseded: (409, "lease_superseded"),
 }
 
 _DELTA_FLUSH_BYTES = 2000

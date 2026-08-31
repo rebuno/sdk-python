@@ -4,7 +4,14 @@ from typing import Any
 import httpx2
 import pytest
 
-from rebuno.errors import Blocked, PolicyError, RateLimited, raise_for_refusal
+from rebuno._kernel import DispatchLease
+from rebuno.errors import (
+    Blocked,
+    LeaseSuperseded,
+    PolicyError,
+    RateLimited,
+    raise_for_refusal,
+)
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 from rebuno.http_client import RebunoTransport, http_client
 from rebuno.types import StepDecision
@@ -21,11 +28,11 @@ class StepKernel:
         self._counters: dict[tuple[str, str], int] = {}
 
     async def submit_step(
-        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        self, execution_id, *, lease, kind, target, args, idempotency
     ):
         ident = json.dumps([kind, target, args], sort_keys=True)
-        occ = self._counters.get((dispatch_id, ident), 0)
-        self._counters[(dispatch_id, ident)] = occ + 1
+        occ = self._counters.get((lease.dispatch_id, ident), 0)
+        self._counters[(lease.dispatch_id, ident)] = occ + 1
         step_id = f"{ident}#{occ}"
         self.submits.append((kind, target, step_id))
         if step_id in self.steps:
@@ -34,14 +41,14 @@ class StepKernel:
             )
         return StepDecision(decision="proceed", step_id=step_id)
 
-    async def complete_step(self, execution_id, step_id, *, result):
+    async def complete_step(self, execution_id, step_id, *, lease, result):
         self.steps[step_id] = result
         self.completed.append(step_id)
 
-    async def fail_step(self, execution_id, step_id, *, error):
+    async def fail_step(self, execution_id, step_id, *, lease, error):
         pass
 
-    async def heartbeat(self, execution_id):
+    async def heartbeat(self, execution_id, *, lease):
         pass
 
     async def stream_delta(self, execution_id, step_id, *, seq, data):
@@ -57,7 +64,7 @@ def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
     return ExecutionContext(
         kernel=kernel,
         execution_id="e1",
-        dispatch_id=dispatch_id,
+        lease=DispatchLease(dispatch_id, 1),
         agent_id="a",
         input={},
     )
@@ -119,7 +126,7 @@ async def test_refusal_is_an_http_status_the_caller_maps_back(
 ):
     class RefuseKernel(StepKernel):
         async def submit_step(
-            self, execution_id, *, dispatch_id, kind, target, args, idempotency
+            self, execution_id, *, lease, kind, target, args, idempotency
         ):
             return StepDecision(decision=decision, reason="nope")
 
@@ -138,6 +145,32 @@ async def test_refusal_is_an_http_status_the_caller_maps_back(
 
     with pytest.raises(expected):
         raise_for_refusal(RuntimeError(f"Error code: {status} - {resp.json()}"))
+
+
+async def test_a_superseded_lease_reaches_the_caller_as_a_refusal():
+    """A superseded attempt is refused where the step is submitted, which for an
+    LLM call is inside the provider SDK. It comes back out as an HTTP error the
+    caller maps to the same control-flow exception."""
+
+    class SupersededKernel(StepKernel):
+        async def submit_step(
+            self, execution_id, *, lease, kind, target, args, idempotency
+        ):
+            raise LeaseSuperseded
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError("provider must not be called")
+
+    token = _set_current(_ctx(SupersededKernel()))
+    try:
+        async with _client(handler) as client:
+            resp = await client.post("/v1/messages", json=REQUEST)
+    finally:
+        _reset_current(token)
+
+    assert resp.status_code == 409
+    with pytest.raises(LeaseSuperseded):
+        raise_for_refusal(RuntimeError(f"Error code: 409 - {resp.json()}"))
 
 
 async def test_refusal_survives_a_framework_wrapping_the_provider_error():

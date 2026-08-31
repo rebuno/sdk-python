@@ -2,7 +2,15 @@ import asyncio
 
 import pytest
 
-from rebuno.errors import Blocked, PolicyError, RateLimited, Terminated, ToolError
+from rebuno._kernel import DispatchLease
+from rebuno.errors import (
+    Blocked,
+    LeaseSuperseded,
+    PolicyError,
+    RateLimited,
+    Terminated,
+    ToolError,
+)
 from rebuno.execution import ExecutionContext, _reset_current, _set_current, execution
 from rebuno.types import StepDecision
 
@@ -18,24 +26,28 @@ class FakeKernel:
         self.submits = []
 
     async def submit_step(
-        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        self, execution_id, *, lease, kind, target, args, idempotency
     ):
-        self.submits.append((dispatch_id, kind, target, args))
+        self.submits.append((lease, kind, target, args))
         dec = self.decisions.pop(0)
         if not dec.step_id and dec.decision in ("proceed", "replay"):
             dec = dec.model_copy(update={"step_id": f"step-{len(self.submits)}"})
         return dec
 
-    async def complete_step(self, execution_id, step_id, *, result):
+    async def complete_step(self, execution_id, step_id, *, lease, result):
         self.completed.append((step_id, result))
 
-    async def fail_step(self, execution_id, step_id, *, error):
+    async def fail_step(self, execution_id, step_id, *, lease, error):
         self.failed.append((step_id, error))
 
 
 def ctx(kernel):
     return ExecutionContext(
-        kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input={"x": 1}
+        kernel=kernel,
+        execution_id="e1",
+        lease=DispatchLease("d1", 1),
+        agent_id="a",
+        input={"x": 1},
     )
 
 
@@ -104,10 +116,10 @@ async def test_body_exception_reports_fail_and_reraises():
     assert k.failed
 
 
-async def test_submit_forwards_dispatch_id():
+async def test_submit_forwards_the_lease():
     k = FakeKernel([StepDecision(decision="replay", result=1)])
     await ctx(k).invoke_tool("t", {"a": 1}, run=None)
-    assert k.submits[0][0] == "d1"
+    assert k.submits[0][0] == DispatchLease("d1", 1)
 
 
 async def test_identical_calls_take_the_kernels_distinct_ids():
@@ -171,7 +183,7 @@ async def test_nested_rate_limited_propagates_without_failing_outer_step():
 
 async def test_fail_step_failure_does_not_mask_original_exception():
     class FlakyKernel(FakeKernel):
-        async def fail_step(self, execution_id, step_id, *, error):
+        async def fail_step(self, execution_id, step_id, *, lease, error):
             raise RuntimeError("network blip")
 
     k = FlakyKernel([StepDecision(decision="proceed")])
@@ -199,9 +211,11 @@ async def test_kernel_calls_from_a_second_loop_run_on_the_owner_loop():
             self.loops.append(asyncio.get_running_loop())
             return await super().submit_step(execution_id, **kw)
 
-        async def complete_step(self, execution_id, step_id, *, result):
+        async def complete_step(self, execution_id, step_id, *, lease, result):
             self.loops.append(asyncio.get_running_loop())
-            await super().complete_step(execution_id, step_id, result=result)
+            await super().complete_step(
+                execution_id, step_id, lease=lease, result=result
+            )
 
     k = LoopRecordingKernel([StepDecision(decision="proceed")])
     owner = asyncio.get_running_loop()
@@ -218,3 +232,39 @@ async def test_kernel_calls_from_a_second_loop_run_on_the_owner_loop():
     assert out == {"echo": "hi"}
     assert k.loops == [owner, owner]
     assert body_loops[0] is not owner
+
+
+async def test_a_lost_lease_stops_the_handler():
+    """A stalled handler whose dispatch was reclaimed learns of it from its own
+    heartbeat, and stops there rather than working on beside its replacement."""
+
+    class SupersedingKernel(FakeKernel):
+        async def heartbeat(self, execution_id, *, lease):
+            raise LeaseSuperseded
+
+    c = ctx(SupersedingKernel([]))
+    finished = False
+
+    async def work():
+        nonlocal finished
+        async with c.lease(interval=0.01):
+            await asyncio.sleep(5)
+            finished = True
+
+    with pytest.raises(LeaseSuperseded):
+        await asyncio.create_task(work())
+    assert not finished
+
+
+async def test_a_lost_lease_inside_a_tool_body_is_not_a_tool_failure():
+    """An LLM call inside the body reaches the kernel too, so the refusal can
+    surface from user code. It unwinds instead of being recorded as the tool
+    failing, which the replacing attempt would then have to replay."""
+    k = FakeKernel([StepDecision(decision="proceed")])
+
+    async def body():
+        raise LeaseSuperseded
+
+    with pytest.raises(LeaseSuperseded):
+        await ctx(k).invoke_tool("t", {}, run=body)
+    assert k.failed == []

@@ -8,8 +8,10 @@ from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
 from typing import Any, TypeVar
 
+from rebuno._kernel import DispatchLease
 from rebuno.errors import (
     Blocked,
+    LeaseSuperseded,
     PolicyError,
     RateLimited,
     RebunoError,
@@ -31,23 +33,32 @@ class ExecutionContext:
         *,
         kernel: Any,
         execution_id: str,
-        dispatch_id: str,
+        lease: DispatchLease,
         agent_id: str,
         input: Any,
         status: str = "running",
     ):
         self._kernel = kernel
         self.id = execution_id
-        self.dispatch_id = dispatch_id
+        self._lease = lease
         self.agent_id = agent_id
         self.input = input
         self.status = status
         # The Blocked or Terminated this context raised, if any.
         self.suspension: Blocked | Terminated | None = None
+        self._superseded = False
         try:
             self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
+
+    @property
+    def dispatch_id(self) -> str:
+        return self._lease.dispatch_id
+
+    @property
+    def dispatch_attempt(self) -> int:
+        return self._lease.attempt
 
     async def _on_owner_loop(self, coro: Coroutine[Any, Any, _T]) -> _T:
         """Await ``coro`` on the loop this context was created on, which is the
@@ -58,11 +69,18 @@ class ExecutionContext:
             asyncio.run_coroutine_threadsafe(coro, self._loop)
         )
 
-    async def _heartbeat_loop(self, interval: float) -> None:
+    async def _heartbeat_loop(
+        self, interval: float, owner: asyncio.Task | None
+    ) -> None:
         while True:
             await asyncio.sleep(interval)
             try:
-                await self._kernel.heartbeat(self.id)
+                await self._kernel.heartbeat(self.id, lease=self._lease)
+            except LeaseSuperseded:
+                self._superseded = True
+                if owner is not None:
+                    owner.cancel()
+                return
             except Exception:
                 logger.warning("dispatch heartbeat failed", exc_info=True)
 
@@ -80,7 +98,7 @@ class ExecutionContext:
         dec = await self._on_owner_loop(
             self._kernel.submit_step(
                 self.id,
-                dispatch_id=self.dispatch_id,
+                lease=self._lease,
                 kind=kind,
                 target=target,
                 args=args,
@@ -140,14 +158,16 @@ class ExecutionContext:
         # proceed: run the body, record the outcome.
         if run is None:
             await self._on_owner_loop(
-                self._kernel.complete_step(self.id, step_id, result=None)
+                self._kernel.complete_step(
+                    self.id, step_id, lease=self._lease, result=None
+                )
             )
             return None
         try:
             result = run()
             if inspect.isawaitable(result):
                 result = await result
-        except (Blocked, Terminated, PolicyError, RateLimited):
+        except (Blocked, Terminated, PolicyError, RateLimited, LeaseSuperseded):
             raise
         except Exception as e:
             await self._fail_step_quietly(step_id, e)
@@ -155,7 +175,9 @@ class ExecutionContext:
                 raise
             raise ToolError(str(e), tool_id=target, step_id=step_id) from e
         await self._on_owner_loop(
-            self._kernel.complete_step(self.id, step_id, result=result)
+            self._kernel.complete_step(
+                self.id, step_id, lease=self._lease, result=result
+            )
         )
         return result
 
@@ -192,13 +214,20 @@ class ExecutionContext:
     async def record_llm(self, step_id: str, result: Any) -> None:
         """Record the assembled streamed response as the step's durable result."""
         await self._on_owner_loop(
-            self._kernel.complete_step(self.id, step_id, result=result)
+            self._kernel.complete_step(
+                self.id, step_id, lease=self._lease, result=result
+            )
         )
 
     def start_heartbeat(self, interval: float = 30.0) -> asyncio.Task:
         """Start a background lease-renewal task and return it. The caller must
-        cancel it when the effect finishes."""
-        return asyncio.create_task(self._heartbeat_loop(interval))
+        cancel it when the effect finishes.
+
+        Losing the lease cancels the task that started the heartbeat, so a
+        handler the kernel has replaced stops instead of working on."""
+        return asyncio.create_task(
+            self._heartbeat_loop(interval, asyncio.current_task())
+        )
 
     @contextlib.asynccontextmanager
     async def lease(self, interval: float = 30.0):
@@ -213,6 +242,10 @@ class ExecutionContext:
         hb = self.start_heartbeat(interval)
         try:
             yield
+        except asyncio.CancelledError:
+            if self._superseded:
+                raise LeaseSuperseded from None
+            raise
         finally:
             hb.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -221,8 +254,12 @@ class ExecutionContext:
     async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
         try:
             await self._on_owner_loop(
-                self._kernel.fail_step(self.id, step_id, error={"message": str(error)})
+                self._kernel.fail_step(
+                    self.id, step_id, lease=self._lease, error={"message": str(error)}
+                )
             )
+        except LeaseSuperseded:
+            raise
         except Exception:
             logger.exception("failed to record step failure for step_id=%s", step_id)
 

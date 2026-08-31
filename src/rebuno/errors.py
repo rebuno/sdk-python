@@ -118,6 +118,24 @@ class Terminated(RebunoError):
     """
 
 
+class LeaseSuperseded(APIError):
+    """Internal control-flow signal: a newer delivery attempt owns this dispatch.
+
+    The kernel refuses every mutation from the superseded attempt. The handler
+    stops where it stands and returns 200, leaving the execution to the attempt
+    that replaced it.
+    """
+
+    def __init__(
+        self,
+        message: str = "dispatch lease superseded",
+        code: str = "lease_superseded",
+        status_code: int = 409,
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(message, code, status_code, details)
+
+
 REFUSAL_TYPE = "rebuno_refusal"
 
 _REFUSAL_RE = re.compile(rf"{REFUSAL_TYPE}: (\w+)(?: reason=(.*))?")
@@ -140,8 +158,9 @@ def raise_for_refusal(exc: BaseException) -> None:
 
     A step the kernel refuses (approval pending, policy denial, rate limit) reaches
     an LLM call as an HTTP error. Call this on the error the provider raised to get
-    ``Blocked``, ``PolicyError``, ``RateLimited`` or ``Terminated`` back, so the
-    dispatch unwinds. Returns silently for any other exception.
+    ``Blocked``, ``PolicyError``, ``RateLimited``, ``Terminated`` or
+    ``LeaseSuperseded`` back, so the dispatch unwinds. Returns silently for any
+    other exception.
     """
     for e in _causes(exc):
         m = _REFUSAL_RE.search(str(e))
@@ -155,6 +174,8 @@ def raise_for_refusal(exc: BaseException) -> None:
             raise Blocked from exc
         if decision == "execution_terminal":
             raise Terminated(reason) from exc
+        if decision == "lease_superseded":
+            raise LeaseSuperseded from exc
         if decision == "denied":
             raise PolicyError(reason) from exc
         if decision == "rate_limited":
@@ -177,6 +198,7 @@ _ERROR_BY_CODE: dict[str, type[APIError]] = {
     "unauthorized": UnauthorizedError,
     "forbidden": ForbiddenError,
     "conflict": APIError,
+    "lease_superseded": LeaseSuperseded,
 }
 
 

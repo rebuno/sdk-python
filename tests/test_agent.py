@@ -8,7 +8,7 @@ import pytest
 from httpx2 import ASGITransport, AsyncClient
 
 from rebuno.agent import Agent
-from rebuno.errors import ToolError
+from rebuno.errors import LeaseSuperseded, ToolError
 
 SECRET = "dev-secret"
 
@@ -30,10 +30,10 @@ class FakeKernel:
             id=execution_id, agent_id="a", input=self._input, status="running"
         )
 
-    async def complete_execution(self, execution_id, *, output):
+    async def complete_execution(self, execution_id, *, lease, output):
         self.completed = output
 
-    async def fail_execution(self, execution_id, *, error):
+    async def fail_execution(self, execution_id, *, lease, error):
         self.failed = error
 
 
@@ -42,9 +42,13 @@ def build(agent, kernel):
     return AsyncClient(transport=ASGITransport(app=agent.app), base_url="http://test")
 
 
-def webhook_body(execution_id="e1", dispatch_id="d1") -> bytes:
+def webhook_body(execution_id="e1", dispatch_id="d1", attempt=1) -> bytes:
     return json.dumps(
-        {"execution_id": execution_id, "dispatch_id": dispatch_id}
+        {
+            "execution_id": execution_id,
+            "dispatch_id": dispatch_id,
+            "dispatch_attempt": attempt,
+        }
     ).encode()
 
 
@@ -167,80 +171,193 @@ def test_custom_kernel_timeout_applied():
     assert agent._http.timeout.connect == 5.0
 
 
-async def test_webhook_without_dispatch_id_is_rejected():
-    """Every effect this run submits must carry the dispatch it was sent under, so
-    a payload missing one is unusable rather than silently degraded."""
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"execution_id": "e1"},
+        {"execution_id": "e1", "dispatch_id": "d1"},
+        {"execution_id": "e1", "dispatch_id": "d1", "dispatch_attempt": 0},
+        {"execution_id": "e1", "dispatch_id": "d1", "dispatch_attempt": "2"},
+    ],
+    ids=["no-dispatch", "no-attempt", "zero-attempt", "attempt-not-a-number"],
+)
+async def test_webhook_without_a_usable_lease_is_rejected(payload):
+    """Every mutation this run makes must carry the lease it was sent under, so a
+    payload that cannot produce one is unusable rather than silently degraded."""
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(_process_ok)
     async with build(agent, FakeKernel({"prompt": "hi"})) as client:
-        body = json.dumps({"execution_id": "e1"}).encode()
+        body = json.dumps(payload).encode()
         r = await client.post(
             "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
         )
         assert r.status_code == 400
 
 
-async def test_dispatch_id_reaches_the_execution_context():
+async def test_lease_reaches_the_execution_context():
     seen = {}
 
     async def proc(prompt: str):
         from rebuno.execution import execution
 
-        seen["dispatch_id"] = execution().dispatch_id
+        seen["dispatch"] = (execution().dispatch_id, execution().dispatch_attempt)
         return {}
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
     async with build(agent, FakeKernel({"prompt": "hi"})) as client:
-        body = webhook_body(dispatch_id="d-42")
+        body = webhook_body(dispatch_id="d-42", attempt=7)
         r = await client.post(
             "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
         )
         assert r.status_code == 200
         await agent.join()
-    assert seen["dispatch_id"] == "d-42"
+    assert seen["dispatch"] == ("d-42", 7)
 
 
-async def test_redelivery_supersedes_the_previous_run():
-    first_started = asyncio.Event()
-    runs = 0
-    cancelled = False
+def _blocking_process():
+    """A process that parks on its first run and returns on later ones, reporting
+    which runs started and whether the first was cancelled."""
+    state = {"runs": 0, "cancelled": False, "started": asyncio.Event()}
 
     async def proc(prompt: str):
-        nonlocal runs, cancelled
-        runs += 1
-        mine = runs
+        state["runs"] += 1
+        mine = state["runs"]
         if mine == 1:
-            first_started.set()
+            state["started"].set()
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
-                cancelled = True
+                state["cancelled"] = True
                 raise
+        return {"run": mine}
+
+    return proc, state
+
+
+async def test_a_later_attempt_supersedes_the_running_one():
+    proc, state = _blocking_process()
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        first = webhook_body(attempt=1)
+        r = await client.post(
+            "/webhook", content=first, headers={"Rebuno-Signature": sign(first)}
+        )
+        assert r.status_code == 200
+        await state["started"].wait()
+
+        second = webhook_body(attempt=2)
+        r = await client.post(
+            "/webhook", content=second, headers={"Rebuno-Signature": sign(second)}
+        )
+        assert r.status_code == 200
+        assert len(agent._tasks) == 1
+        await agent.join()
+
+    assert state["cancelled"]
+    assert k.completed == {"run": 2}
+    # The superseded run must not have written: CancelledError unwinds past the
+    # handler's except Exception without failing the execution the new run owns.
+    assert k.failed is None
+
+
+async def test_a_stalled_handler_does_not_hold_up_its_replacement():
+    """Cancellation is cooperative, so a handler stalled in a long call unwinds
+    whenever it gets round to it. The attempt that replaced it holds the only live
+    lease and must start now, not once its predecessor is finally gone."""
+    started = {1: asyncio.Event(), 2: asyncio.Event()}
+    release = asyncio.Event()
+    runs = 0
+
+    async def proc(prompt: str):
+        nonlocal runs
+        runs += 1
+        mine = runs
+        started[mine].set()
+        if mine == 1:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await release.wait()
         return {"run": mine}
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
     agent.bind(proc)
+    async with build(agent, FakeKernel({"prompt": "hi"})) as client:
+        first = webhook_body(attempt=1)
+        r = await client.post(
+            "/webhook", content=first, headers={"Rebuno-Signature": sign(first)}
+        )
+        assert r.status_code == 200
+        await started[1].wait()
+
+        second = webhook_body(attempt=2)
+        r = await client.post(
+            "/webhook", content=second, headers={"Rebuno-Signature": sign(second)}
+        )
+        assert r.status_code == 200
+        await asyncio.wait_for(started[2].wait(), timeout=1)
+        release.set()
+        await agent.close()
+
+
+@pytest.mark.parametrize(
+    "attempt", [2, 1], ids=["identical-redelivery", "attempt-already-replaced"]
+)
+async def test_a_redelivery_the_kernel_has_moved_past_is_ignored(attempt):
+    """At-least-once delivery repeats a webhook, and a reclaimed attempt can land
+    after the one that replaced it. Neither may restart or cancel the run that
+    owns the execution."""
+    proc, state = _blocking_process()
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
     k = FakeKernel({"prompt": "hi"})
+    async with build(agent, k) as client:
+        live = webhook_body(attempt=2)
+        r = await client.post(
+            "/webhook", content=live, headers={"Rebuno-Signature": sign(live)}
+        )
+        assert r.status_code == 200
+        await state["started"].wait()
+        running = agent._tasks["e1"].task
+
+        stale = webhook_body(attempt=attempt)
+        r = await client.post(
+            "/webhook", content=stale, headers={"Rebuno-Signature": sign(stale)}
+        )
+        assert r.status_code == 200
+        assert agent._tasks["e1"].task is running
+        assert state["runs"] == 1
+        assert not state["cancelled"]
+        await agent.close()
+
+    assert k.completed is None
+    assert k.failed is None
+
+
+async def test_a_superseded_handler_does_not_fail_the_execution():
+    """The kernel refuses the superseded attempt's writes. The handler unwinds on
+    that refusal, leaving the execution to the attempt that replaced it."""
+
+    class SupersedingKernel(FakeKernel):
+        async def complete_execution(self, execution_id, *, lease, output):
+            raise LeaseSuperseded
+
+    async def proc(prompt: str):
+        return {"answer": "done"}
+
+    agent = Agent("a", secret=SECRET, base_url="http://k")
+    agent.bind(proc)
+    k = SupersedingKernel({"prompt": "hi"})
     async with build(agent, k) as client:
         body = webhook_body()
         r = await client.post(
             "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
         )
         assert r.status_code == 200
-        await first_started.wait()
-
-        r = await client.post(
-            "/webhook", content=body, headers={"Rebuno-Signature": sign(body)}
-        )
-        assert r.status_code == 200
-        assert len(agent._tasks) == 1
         await agent.join()
-
-    assert cancelled
-    assert k.completed == {"run": 2}
-    # The superseded run must not have written: CancelledError unwinds past the
-    # handler's except Exception without failing the execution the new run owns.
     assert k.failed is None
 
 
@@ -250,7 +367,7 @@ async def test_distinct_executions_run_concurrently():
             super().__init__(input)
             self.all: list[str] = []
 
-        async def complete_execution(self, execution_id, *, output):
+        async def complete_execution(self, execution_id, *, lease, output):
             self.all.append(execution_id)
 
     agent = Agent("a", secret=SECRET, base_url="http://k")
@@ -271,7 +388,7 @@ class BlockingKernel(FakeKernel):
     """Holds every step for approval, the way a require_approval policy does."""
 
     async def submit_step(
-        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        self, execution_id, *, lease, kind, target, args, idempotency
     ):
         from rebuno.types import StepDecision
 
