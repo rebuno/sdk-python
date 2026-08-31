@@ -5,7 +5,7 @@ import hmac
 import json
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 
 from rebuno.agent import Agent
 from rebuno.errors import ToolError
@@ -425,7 +425,7 @@ async def test_failure_reason_for_bad_input():
 
 
 async def test_denied_llm_call_records_the_kernel_reason():
-    import httpx
+    import httpx2
 
     from rebuno.errors import REFUSAL_TYPE
     from rebuno.http_client import RebunoTransport
@@ -439,11 +439,11 @@ async def test_denied_llm_call_records_the_kernel_reason():
             return StepDecision(decision="denied", reason=REASON)
 
     def provider(request):
-        return httpx.Response(200, json={"ok": True}, request=request)
+        return httpx2.Response(200, json={"ok": True}, request=request)
 
     async def proc(prompt: str):
-        async with httpx.AsyncClient(
-            transport=RebunoTransport(httpx.MockTransport(provider))
+        async with httpx2.AsyncClient(
+            transport=RebunoTransport(httpx2.MockTransport(provider))
         ) as c:
             r = await c.post("http://llm/v1/chat", json={"model": "m"})
             raise RuntimeError(f"Error code: 403 - {r.json()}")

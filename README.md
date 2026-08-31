@@ -7,7 +7,7 @@ produces, so a resumed run replays the recorded result instead of doing the work
 again. The SDK gives you three ways to record an effect:
 
 - `@rebuno.tool` — mark an async function as a durable tool call
-- `rebuno.http_client()` — an `httpx` client that records LLM calls as durable
+- `rebuno.http_client()` — an `httpx2` client that records LLM calls as durable
   steps (drop it into your OpenAI/Anthropic client)
 - `rebuno.step()` — record non-deterministic local work (time, randomness, ids) so it
   replays identically
@@ -85,7 +85,7 @@ async def render(doc: str) -> bytes:
 
 LLM calls are the most expensive and least deterministic thing an agent does, so
 Rebuno records them too — without you rewriting how you call the model.
-`http_client()` returns an `httpx.AsyncClient` you hand to your provider's async
+`http_client()` returns an `httpx2.AsyncClient` you hand to your provider's async
 client:
 
 ```python
@@ -95,12 +95,15 @@ import rebuno
 llm = AsyncOpenAI(http_client=rebuno.http_client())
 ```
 
-It works as an httpx transport that sits under the provider SDK: on the first
+HTTPX and HTTPX2 clients are different types, so use a provider SDK version that
+accepts HTTPX2 clients.
+
+It works as an httpx2 transport that sits under the provider SDK: on the first
 run it forwards the request to the provider and records the response as a durable
 step (`kind=llm_call`, the same machinery as tool calls); on resume it replays
 the recorded response instead of calling — and paying for — the model again. The
 request's `model` field is used as the step target. Extra kwargs (e.g.
-`timeout`) are forwarded to `httpx.AsyncClient`.
+`timeout`) are forwarded to `httpx2.AsyncClient`.
 
 Streaming works the same way: the transport tees the provider's event stream to
 your code while assembling it, records the assembled whole, and replays it as a
