@@ -23,11 +23,6 @@ class DispatchLease:
     dispatch_id: str
     attempt: int
 
-    def supersedes(self, other: DispatchLease) -> bool:
-        """Whether this delivery replaces one already being handled. Attempts only
-        order within a dispatch; a different dispatch is always fresh work."""
-        return self.dispatch_id != other.dispatch_id or self.attempt > other.attempt
-
     def headers(self) -> dict[str, str]:
         return {
             "Rebuno-Dispatch-Id": self.dispatch_id,

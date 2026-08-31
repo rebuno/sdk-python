@@ -106,9 +106,12 @@ class Agent:
             if not execution_id or lease is None:
                 return Response(status_code=400)
             running = self._tasks.get(execution_id)
-            if running is not None and not lease.supersedes(running.lease):
-                return Response(status_code=200)
             if running is not None:
+                if (
+                    lease.dispatch_id == running.lease.dispatch_id
+                    and lease.attempt <= running.lease.attempt
+                ):
+                    return Response(status_code=200)
                 self._supersede(running.task)
             task = asyncio.create_task(self._safe_handle(execution_id, lease))
             self._tasks[execution_id] = _Running(lease, task)
