@@ -101,14 +101,14 @@ async def test_every_mutation_carries_the_lease(client, captured, call):
 
 
 async def test_superseded_lease_maps_to_its_control_flow_error():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             409,
             json={"code": "lease_superseded", "message": "dispatch lease superseded"},
         )
 
-    http = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="http://k"
+    http = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="http://k"
     )
     client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
     with pytest.raises(LeaseSuperseded):
