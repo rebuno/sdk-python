@@ -19,6 +19,7 @@ from rebuno.errors import (
     APIError,
     Blocked,
     ForbiddenError,
+    LeaseSuperseded,
     NetworkError,
     NotFoundError,
     PolicyError,
@@ -58,6 +59,7 @@ __all__ = [
     "RateLimited",
     "Blocked",
     "Terminated",
+    "LeaseSuperseded",
     "failure_reason",
     "raise_for_refusal",
 ]

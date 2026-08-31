@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rebuno._kernel import DispatchLease
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 from rebuno.mcp import wrap_mcp_tool, wrap_mcp_tools
 from rebuno.types import StepDecision
@@ -14,14 +15,14 @@ class FakeKernel:
         self.completed = []
 
     async def submit_step(
-        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        self, execution_id, *, lease, kind, target, args, idempotency
     ):
         self.captured = dict(
             kind=kind, target=target, args=args, idempotency=idempotency
         )
         return self.decision
 
-    async def complete_step(self, execution_id, step_id, *, result):
+    async def complete_step(self, execution_id, step_id, *, lease, result):
         self.completed.append(result)
 
 
@@ -50,7 +51,11 @@ def make_call(record):
 def install_context(kernel):
     return _set_current(
         ExecutionContext(
-            kernel=kernel, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=kernel,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
 

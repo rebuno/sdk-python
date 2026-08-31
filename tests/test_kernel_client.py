@@ -5,12 +5,13 @@ import json
 import httpx2
 import pytest
 
-from rebuno._kernel import KernelClient
-from rebuno.errors import APIError
+from rebuno._kernel import DispatchLease, KernelClient
+from rebuno.errors import APIError, LeaseSuperseded
 from rebuno.types import StepDecision
 
 SECRET = "dev-secret"
 AGENT = "dev-agent"
+LEASE = DispatchLease("d1", 3)
 
 
 def _sig(body: bytes) -> str:
@@ -38,10 +39,10 @@ def client(captured):
     return KernelClient(agent_id=AGENT, secret=SECRET, http=http)
 
 
-async def test_submit_step_sends_dispatch_and_returns_kernel_step_id(client, captured):
+async def test_submit_step_returns_the_kernel_step_id(client, captured):
     dec = await client.submit_step(
         "e1",
-        dispatch_id="d1",
+        lease=LEASE,
         kind="tool_call",
         target="t",
         args={"b": 2, "a": 1},
@@ -52,17 +53,66 @@ async def test_submit_step_sends_dispatch_and_returns_kernel_step_id(client, cap
     req = captured["request"]
     body = captured["body"]
     assert req.headers["Rebuno-Agent-Id"] == AGENT
-    assert req.headers["Rebuno-Dispatch-Id"] == "d1"
     assert req.headers["Rebuno-Signature"] == _sig(body)
     # Args go as plain JSON — the kernel canonicalizes what it receives before hashing.
     assert json.loads(body)["args"] == {"b": 2, "a": 1}
 
 
 async def test_complete_step_posts_result(client, captured):
-    await client.complete_step("e1", "sid123", result={"ok": True})
+    await client.complete_step("e1", "sid123", lease=LEASE, result={"ok": True})
     body = json.loads(captured["body"])
     assert body == {"result": {"ok": True}}
     assert captured["request"].headers["Rebuno-Signature"] == _sig(captured["body"])
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: c.submit_step(
+            "e1",
+            lease=LEASE,
+            kind="tool_call",
+            target="t",
+            args={},
+            idempotency="safe_to_retry",
+        ),
+        lambda c: c.complete_step("e1", "sid123", lease=LEASE, result=None),
+        lambda c: c.fail_step("e1", "sid123", lease=LEASE, error={"message": "x"}),
+        lambda c: c.heartbeat("e1", lease=LEASE),
+        lambda c: c.complete_execution("e1", lease=LEASE, output={}),
+        lambda c: c.fail_execution("e1", lease=LEASE, error="boom"),
+    ],
+    ids=[
+        "submit_step",
+        "complete_step",
+        "fail_step",
+        "heartbeat",
+        "complete_execution",
+        "fail_execution",
+    ],
+)
+async def test_every_mutation_carries_the_lease(client, captured, call):
+    """The kernel fences each mutation on the delivery attempt that issued it, so
+    one sent without the lease is refused outright."""
+    await call(client)
+    headers = captured["request"].headers
+    assert headers["Rebuno-Dispatch-Id"] == "d1"
+    assert headers["Rebuno-Dispatch-Attempt"] == "3"
+
+
+async def test_superseded_lease_maps_to_its_control_flow_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={"code": "lease_superseded", "message": "dispatch lease superseded"},
+        )
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://k"
+    )
+    client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+    with pytest.raises(LeaseSuperseded):
+        await client.complete_execution("e1", lease=LEASE, output={})
 
 
 async def test_stream_delta_posts_seq_and_data(client, captured):

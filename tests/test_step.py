@@ -1,3 +1,4 @@
+from rebuno._kernel import DispatchLease
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
 from rebuno.step import step
 from rebuno.types import StepDecision
@@ -9,14 +10,14 @@ class FakeKernel:
         self.completed = []
 
     async def submit_step(
-        self, execution_id, *, dispatch_id, kind, target, args, idempotency
+        self, execution_id, *, lease, kind, target, args, idempotency
     ):
         self.captured = dict(
             target=target, args=args, idempotency=idempotency, kind=kind
         )
         return self.decision
 
-    async def complete_step(self, execution_id, step_id, *, result):
+    async def complete_step(self, execution_id, step_id, *, lease, result):
         self.completed.append(result)
 
 
@@ -24,7 +25,11 @@ async def test_step_records_local_work():
     k = FakeKernel(StepDecision(decision="proceed"))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
@@ -42,7 +47,11 @@ async def test_step_replays():
     k = FakeKernel(StepDecision(decision="replay", result=7))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
@@ -56,7 +65,11 @@ async def test_step_forwards_idempotency():
     k = FakeKernel(StepDecision(decision="proceed"))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
@@ -70,7 +83,11 @@ async def test_step_defaults_idempotency_to_safe_to_retry():
     k = FakeKernel(StepDecision(decision="proceed"))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
@@ -84,7 +101,11 @@ async def test_step_records_args_dict():
     k = FakeKernel(StepDecision(decision="proceed"))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
@@ -101,7 +122,11 @@ async def test_step_handles_arg_named_name():
     k = FakeKernel(StepDecision(decision="proceed"))
     token = _set_current(
         ExecutionContext(
-            kernel=k, execution_id="e1", dispatch_id="d1", agent_id="a", input=None
+            kernel=k,
+            execution_id="e1",
+            lease=DispatchLease("d1", 1),
+            agent_id="a",
+            input=None,
         )
     )
     try:
