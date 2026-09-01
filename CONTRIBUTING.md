@@ -35,3 +35,8 @@ Open an issue on GitHub. Include:
 - What actually happened
 - Steps to reproduce
 - Relevant logs or error messages
+
+## License
+
+By submitting a contribution, you agree that it is licensed under the
+[MIT License](LICENSE), the same terms that cover the rest of the project.
