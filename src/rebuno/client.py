@@ -70,14 +70,10 @@ class Client:
             code, message, resp.status_code, rule_id=data.get("rule_id", "")
         )
 
-    async def create(
-        self, agent_id: str, input: Any = None, *, agent_version: str = ""
-    ) -> Execution:
+    async def create(self, agent_id: str, input: Any = None) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
             body["input"] = input
-        if agent_version:
-            body["agent_version"] = agent_version
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 

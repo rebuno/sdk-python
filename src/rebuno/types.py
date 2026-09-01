@@ -22,7 +22,6 @@ class _Model(BaseModel):
 class Execution(_Model):
     id: str
     agent_id: str = ""
-    agent_version: str = ""
     input: Any = None
     status: ExecutionStatus = ExecutionStatus.PENDING
     output: Any = None
