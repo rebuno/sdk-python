@@ -69,11 +69,9 @@ class ExecutionContext:
             asyncio.run_coroutine_threadsafe(coro, self._loop)
         )
 
-    async def _heartbeat_loop(
-        self, interval: float, owner: asyncio.Task | None
-    ) -> None:
+    async def _heartbeat_loop(self, owner: asyncio.Task | None) -> None:
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(self._lease.heartbeat_interval)
             try:
                 await self._kernel.heartbeat(self.id, lease=self._lease)
             except LeaseSuperseded:
@@ -219,18 +217,16 @@ class ExecutionContext:
             )
         )
 
-    def start_heartbeat(self, interval: float = 30.0) -> asyncio.Task:
+    def start_heartbeat(self) -> asyncio.Task:
         """Start a background lease-renewal task and return it. The caller must
         cancel it when the effect finishes.
 
         Losing the lease cancels the task that started the heartbeat, so a
         handler the kernel has replaced stops instead of working on."""
-        return asyncio.create_task(
-            self._heartbeat_loop(interval, asyncio.current_task())
-        )
+        return asyncio.create_task(self._heartbeat_loop(asyncio.current_task()))
 
     @contextlib.asynccontextmanager
-    async def lease(self, interval: float = 30.0):
+    async def lease(self):
         """Renew the dispatch lease for the duration of the block, so the kernel
         doesn't reclaim the dispatch and re-deliver it to a second handler.
 
@@ -239,7 +235,7 @@ class ExecutionContext:
         calls, MCP tools, kernel round-trips) is I/O-bound and async, so this
         holds; wrap CPU-bound sync work in a thread if it ever doesn't.
         """
-        hb = self.start_heartbeat(interval)
+        hb = self.start_heartbeat()
         try:
             yield
         except asyncio.CancelledError:

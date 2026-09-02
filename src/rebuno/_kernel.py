@@ -11,6 +11,8 @@ import httpx2
 from rebuno.errors import NotFoundError, error_from_response
 from rebuno.types import Execution, Step, StepDecision
 
+MAX_HEARTBEAT_INTERVAL = 30.0
+
 
 @dataclass(frozen=True, slots=True)
 class DispatchLease:
@@ -22,6 +24,12 @@ class DispatchLease:
 
     dispatch_id: str
     attempt: int
+    timeout: float
+
+    @property
+    def heartbeat_interval(self) -> float:
+        """Three renewals per lease period, capped at ``MAX_HEARTBEAT_INTERVAL``."""
+        return min(self.timeout / 3, MAX_HEARTBEAT_INTERVAL)
 
     def headers(self) -> dict[str, str]:
         return {

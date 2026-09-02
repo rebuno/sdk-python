@@ -53,7 +53,7 @@ def install_context(kernel):
         ExecutionContext(
             kernel=kernel,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )

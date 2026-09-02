@@ -64,7 +64,7 @@ def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
     return ExecutionContext(
         kernel=kernel,
         execution_id="e1",
-        lease=DispatchLease(dispatch_id, 1),
+        lease=DispatchLease(dispatch_id, 1, 120.0),
         agent_id="a",
         input={},
     )

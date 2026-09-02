@@ -27,7 +27,7 @@ async def test_step_records_local_work():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -49,7 +49,7 @@ async def test_step_replays():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -67,7 +67,7 @@ async def test_step_forwards_idempotency():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -85,7 +85,7 @@ async def test_step_defaults_idempotency_to_safe_to_retry():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -103,7 +103,7 @@ async def test_step_records_args_dict():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -124,7 +124,7 @@ async def test_step_handles_arg_named_name():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )

@@ -11,7 +11,7 @@ from rebuno.types import StepDecision
 
 SECRET = "dev-secret"
 AGENT = "dev-agent"
-LEASE = DispatchLease("d1", 3)
+LEASE = DispatchLease("d1", 3, 120.0)
 
 
 def _sig(body: bytes) -> str:

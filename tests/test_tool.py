@@ -48,7 +48,7 @@ async def test_tool_runs_under_context_and_binds_args():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -68,7 +68,7 @@ async def test_tool_id_and_idempotency_override():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -92,7 +92,7 @@ async def test_tool_variadic_args_expand_correctly():
         ExecutionContext(
             kernel=k,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )
@@ -118,7 +118,7 @@ def _ctx(kernel):
         ExecutionContext(
             kernel=kernel,
             execution_id="e1",
-            lease=DispatchLease("d1", 1),
+            lease=DispatchLease("d1", 1, 120.0),
             agent_id="a",
             input=None,
         )

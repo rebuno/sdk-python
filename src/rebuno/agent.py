@@ -258,4 +258,7 @@ def _lease_from(payload: dict[str, Any]) -> DispatchLease | None:
     attempt = payload.get("dispatch_attempt")
     if not dispatch_id or type(attempt) is not int or attempt <= 0:
         return None
-    return DispatchLease(dispatch_id, attempt)
+    timeout = payload.get("lease_timeout_seconds")
+    if type(timeout) not in (int, float) or timeout <= 0:
+        return None
+    return DispatchLease(dispatch_id, attempt, float(timeout))

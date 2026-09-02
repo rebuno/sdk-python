@@ -42,14 +42,19 @@ def build(agent, kernel):
     return AsyncClient(transport=ASGITransport(app=agent.app), base_url="http://test")
 
 
-def webhook_body(execution_id="e1", dispatch_id="d1", attempt=1) -> bytes:
-    return json.dumps(
-        {
-            "execution_id": execution_id,
-            "dispatch_id": dispatch_id,
-            "dispatch_attempt": attempt,
-        }
-    ).encode()
+def _payload(
+    execution_id="e1", dispatch_id="d1", attempt=1, lease_timeout=120.0
+) -> dict:
+    return {
+        "execution_id": execution_id,
+        "dispatch_id": dispatch_id,
+        "dispatch_attempt": attempt,
+        "lease_timeout_seconds": lease_timeout,
+    }
+
+
+def webhook_body(**kwargs) -> bytes:
+    return json.dumps(_payload(**kwargs)).encode()
 
 
 async def _process_ok(prompt: str):
@@ -178,8 +183,21 @@ def test_custom_kernel_timeout_applied():
         {"execution_id": "e1", "dispatch_id": "d1"},
         {"execution_id": "e1", "dispatch_id": "d1", "dispatch_attempt": 0},
         {"execution_id": "e1", "dispatch_id": "d1", "dispatch_attempt": "2"},
+        {"execution_id": "e1", "dispatch_id": "d1", "dispatch_attempt": 1},
+        _payload(lease_timeout="120"),
+        _payload(lease_timeout=True),
+        _payload(lease_timeout=0),
     ],
-    ids=["no-dispatch", "no-attempt", "zero-attempt", "attempt-not-a-number"],
+    ids=[
+        "no-dispatch",
+        "no-attempt",
+        "zero-attempt",
+        "attempt-not-a-number",
+        "no-timeout",
+        "timeout-not-a-number",
+        "timeout-is-a-bool",
+        "zero-timeout",
+    ],
 )
 async def test_webhook_without_a_usable_lease_is_rejected(payload):
     """Every mutation this run makes must carry the lease it was sent under, so a

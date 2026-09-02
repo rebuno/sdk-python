@@ -41,11 +41,11 @@ class FakeKernel:
         self.failed.append((step_id, error))
 
 
-def ctx(kernel):
+def ctx(kernel, lease_timeout=120.0):
     return ExecutionContext(
         kernel=kernel,
         execution_id="e1",
-        lease=DispatchLease("d1", 1),
+        lease=DispatchLease("d1", 1, lease_timeout),
         agent_id="a",
         input={"x": 1},
     )
@@ -119,7 +119,7 @@ async def test_body_exception_reports_fail_and_reraises():
 async def test_submit_forwards_the_lease():
     k = FakeKernel([StepDecision(decision="replay", result=1)])
     await ctx(k).invoke_tool("t", {"a": 1}, run=None)
-    assert k.submits[0][0] == DispatchLease("d1", 1)
+    assert k.submits[0][0] == DispatchLease("d1", 1, 120.0)
 
 
 async def test_identical_calls_take_the_kernels_distinct_ids():
@@ -242,12 +242,12 @@ async def test_a_lost_lease_stops_the_handler():
         async def heartbeat(self, execution_id, *, lease):
             raise LeaseSuperseded
 
-    c = ctx(SupersedingKernel([]))
+    c = ctx(SupersedingKernel([]), lease_timeout=0.03)
     finished = False
 
     async def work():
         nonlocal finished
-        async with c.lease(interval=0.01):
+        async with c.lease():
             await asyncio.sleep(5)
             finished = True
 
