@@ -6,7 +6,7 @@ import httpx2
 import pytest
 
 from rebuno._kernel import DispatchLease, KernelClient
-from rebuno.errors import APIError, LeaseSuperseded
+from rebuno.errors import LeaseSuperseded, Terminated
 from rebuno.types import StepDecision
 
 SECRET = "dev-secret"
@@ -54,7 +54,6 @@ async def test_submit_step_returns_the_kernel_step_id(client, captured):
     body = captured["body"]
     assert req.headers["Rebuno-Agent-Id"] == AGENT
     assert req.headers["Rebuno-Signature"] == _sig(body)
-    # Args go as plain JSON — the kernel canonicalizes what it receives before hashing.
     assert json.loads(body)["args"] == {"b": 2, "a": 1}
 
 
@@ -115,6 +114,20 @@ async def test_superseded_lease_maps_to_its_control_flow_error():
         await client.complete_execution("e1", lease=LEASE, output={})
 
 
+async def test_terminal_execution_maps_to_its_control_flow_error():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            409, json={"code": "execution_terminal", "message": "execution terminal"}
+        )
+
+    http = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="http://k"
+    )
+    client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+    with pytest.raises(Terminated):
+        await client.complete_execution("e1", lease=LEASE, output={})
+
+
 async def test_stream_delta_posts_seq_and_data(client, captured):
     await client.stream_delta("e1", "sid123", seq=4, data="tok")
     body = json.loads(captured["body"])
@@ -122,18 +135,3 @@ async def test_stream_delta_posts_seq_and_data(client, captured):
     req = captured["request"]
     assert req.url.path == "/v0/executions/e1/steps/sid123/stream"
     assert req.headers["Rebuno-Signature"] == _sig(captured["body"])
-
-
-async def test_conflict_maps_to_api_error():
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(
-            409, json={"code": "conflict", "message": "already exists"}
-        )
-
-    http = httpx2.AsyncClient(
-        transport=httpx2.MockTransport(handler), base_url="http://k"
-    )
-    client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
-    with pytest.raises(APIError) as exc_info:
-        await client.get_execution("e1")
-    assert exc_info.value.code == "conflict"

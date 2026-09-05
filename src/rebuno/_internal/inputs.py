@@ -5,10 +5,7 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-try:
-    from pydantic import BaseModel
-except ImportError:
-    BaseModel = None  # type: ignore[assignment,misc]
+from pydantic import BaseModel
 
 
 class InputBinder:
@@ -41,11 +38,7 @@ class InputBinder:
         if len(params) == 1:
             p = params[0]
             ann = hints.get(p.name, p.annotation)
-            if (
-                BaseModel is not None
-                and isinstance(ann, type)
-                and issubclass(ann, BaseModel)
-            ):
+            if isinstance(ann, type) and issubclass(ann, BaseModel):
                 return "model", ann
             if ann is inspect.Parameter.empty or ann is Any or ann is dict:
                 return "raw", None
@@ -54,8 +47,7 @@ class InputBinder:
     def bind(self, execution_input: Any) -> dict[str, Any]:
         """Convert an execution's input into the kwargs the handler expects.
 
-        Raises ValueError on validation failure (used to fail the execution
-        with a clear message before the handler runs).
+        Raises ValueError on validation failure.
         """
         if self.shape == "raw":
             return {next(iter(self.sig.parameters)): execution_input}

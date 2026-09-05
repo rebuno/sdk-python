@@ -2,7 +2,7 @@ import httpx2
 import pytest
 
 from rebuno.client import Client
-from rebuno.errors import APIError
+from rebuno.errors import ConflictError
 from rebuno.types import Execution
 
 
@@ -46,13 +46,13 @@ async def test_cancel_and_approvals():
     assert await c.list_approvals() == []
 
 
-async def test_conflict_maps_to_api_error():
+async def test_conflict_maps_to_conflict_error():
     def handler(req):
         return httpx2.Response(
             409, json={"code": "conflict", "message": "already exists"}
         )
 
     c = make_client(handler)
-    with pytest.raises(APIError) as exc_info:
+    with pytest.raises(ConflictError) as exc_info:
         await c.cancel("e1")
     assert exc_info.value.code == "conflict"

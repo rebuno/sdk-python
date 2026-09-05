@@ -24,7 +24,7 @@ If you change public API surface or behavior, update it there.
 
 1. Fork the repo and create a branch from `main`.
 2. Make your changes. Add tests for new functionality.
-3. Run `uv run ruff format`, then make sure `uv run pytest` and `uv run ruff check` pass — CI runs those two plus `ruff format --check`.
+3. Run `uv run ruff format`, then make sure `uv run pytest` and `uv run ruff check` pass. CI runs those two plus `ruff format --check`.
 4. Open a pull request with a clear description of what changed and why.
 
 ## Reporting Issues

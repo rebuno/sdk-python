@@ -28,7 +28,6 @@ class DispatchLease:
 
     @property
     def heartbeat_interval(self) -> float:
-        """Three renewals per lease period, capped at ``MAX_HEARTBEAT_INTERVAL``."""
         return min(self.timeout / 3, MAX_HEARTBEAT_INTERVAL)
 
     def headers(self) -> dict[str, str]:
@@ -68,20 +67,8 @@ class KernelClient:
             method, path, content=body, headers=self._headers(body, extra)
         )
         if resp.status_code >= 400:
-            raise self._error(resp)
+            raise error_from_response(resp)
         return resp
-
-    @staticmethod
-    def _error(resp: httpx2.Response) -> Exception:
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
-        code = data.get("code", "internal_error")
-        message = data.get("message", resp.text or "request failed")
-        return error_from_response(
-            code, message, resp.status_code, rule_id=data.get("rule_id", "")
-        )
 
     async def get_execution(self, execution_id: str) -> Execution:
         resp = await self._send("GET", f"/v0/executions/{execution_id}", b"")
@@ -145,7 +132,6 @@ class KernelClient:
         )
 
     async def heartbeat(self, execution_id: str, *, lease: DispatchLease) -> None:
-        """Renew the dispatch lease while a long effect body runs (empty signed body)."""
         await self._send(
             "POST", f"/v0/executions/{execution_id}/heartbeat", b"", lease.headers()
         )

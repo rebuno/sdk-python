@@ -8,8 +8,6 @@ import httpx2
 from rebuno.errors import NetworkError, error_from_response
 from rebuno.types import Approval, Event, Execution, Step
 
-USER_AGENT = "rebuno-python-sdk"
-
 
 class Client:
     """Async HTTP client for client/admin kernel routes (Bearer auth).
@@ -33,9 +31,7 @@ class Client:
         self.api_key = (
             api_key if api_key is not None else os.environ.get("REBUNO_API_KEY", "")
         )
-        headers = {"User-Agent": USER_AGENT}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         self._http = httpx2.AsyncClient(
             base_url=self.base_url, headers=headers, timeout=timeout
         )
@@ -55,20 +51,8 @@ class Client:
         except (httpx2.ConnectError, httpx2.TimeoutException) as e:
             raise NetworkError(str(e)) from e
         if resp.status_code >= 400:
-            raise self._error(resp)
+            raise error_from_response(resp)
         return resp
-
-    @staticmethod
-    def _error(resp: httpx2.Response) -> Exception:
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
-        code = data.get("code", "internal_error")
-        message = data.get("message", resp.text or "request failed")
-        return error_from_response(
-            code, message, resp.status_code, rule_id=data.get("rule_id", "")
-        )
 
     async def create(self, agent_id: str, input: Any = None) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}

@@ -43,7 +43,7 @@ def wrap_mcp_tool(
         descriptor: An MCP tool with ``name``, ``description``, and ``inputSchema``
             (the spec field names). Attribute or dict access both work, so the
             official ``mcp`` SDK's ``Tool``, a fastmcp tool, or a plain dict all fit.
-        call: ``call(tool_name, args)`` — your MCP client's invocation, the only
+        call: ``call(tool_name, args)``, your MCP client's invocation and the only
             seam to the transport. Receives the bare tool name.
         prefix: Tool-id namespace. The LLM and the kernel both see ``f"{prefix}_{name}"``;
             only the MCP server (via ``call``) sees the bare ``name``. Empty prefix
@@ -66,7 +66,7 @@ def wrap_mcp_tool(
 
     return wrap_tool(
         tool_id,
-        lambda args: call(name, args),  # the wire call uses the bare name
+        lambda args: call(name, args),
         description=description,
         args_schema=schema,
         idempotency=idempotency,
@@ -76,7 +76,6 @@ def wrap_mcp_tool(
 
 
 def _field(descriptor: Any, key: str, *, default: Any = None) -> Any:
-    """Read ``key`` from a descriptor by attribute, falling back to dict access."""
     if isinstance(descriptor, dict):
         return descriptor.get(key, default)
     return getattr(descriptor, key, default)
@@ -89,16 +88,9 @@ def _strip_none(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_flatten(raw: Any) -> Any:
-    """Flatten a standard MCP ``CallToolResult`` to a JSON-serializable value.
-
-    Prefers structured content (``structured_content`` in fastmcp,
-    ``structuredContent`` in the official SDK). Otherwise joins text content
-    blocks. A value that is neither (already a dict/str the caller flattened
-    itself) is passed through unchanged.
-    """
-    structured = getattr(raw, "structured_content", None)
+    structured = getattr(raw, "structured_content", None)  # fastmcp
     if structured is None:
-        structured = getattr(raw, "structuredContent", None)
+        structured = getattr(raw, "structuredContent", None)  # official SDK
     if structured is not None:
         return structured
 

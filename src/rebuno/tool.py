@@ -53,7 +53,7 @@ def wrap_tool(
     """Wrap an arbitrary tool as a Rebuno-routed callable.
 
     ``wrap_tool`` builds the callable from a ``name`` plus an ``invoke(args)``
-    seam — so it fits tools that are not plain callables: framework tool objects
+    seam, so it fits tools that are not plain callables: framework tool objects
     or schema-only tools (see :func:`rebuno.mcp.wrap_mcp_tool`). The returned callable routes
     every call through the kernel for policy, replay, and audit.
 
@@ -108,7 +108,7 @@ def _signature_from_schema(schema: dict[str, Any]) -> inspect.Signature:
     """Build a keyword-only signature from a JSON-schema ``properties`` map.
 
     Required properties get no default; optional ones default to ``None``. The
-    signature is for framework introspection only — the wrapper accepts
+    signature is for framework introspection only: the wrapper accepts
     ``**kwargs``, so an arg outside the schema is still passed through at runtime.
     """
     props = schema.get("properties", {}) if isinstance(schema, dict) else {}

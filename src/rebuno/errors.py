@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+
+import httpx2
 
 
 class RebunoError(Exception):
     """Base exception for all Rebuno SDK errors."""
-
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
-        super().__init__(message)
-        self.details = details or {}
 
 
 class NetworkError(RebunoError):
@@ -22,14 +19,8 @@ class NetworkError(RebunoError):
 class APIError(RebunoError):
     """Raised when the API returns an error response."""
 
-    def __init__(
-        self,
-        message: str,
-        code: str,
-        status_code: int,
-        details: dict[str, Any] | None = None,
-    ):
-        super().__init__(message, details)
+    def __init__(self, message: str, code: str, status_code: int):
+        super().__init__(message)
         self.code = code
         self.status_code = status_code
 
@@ -131,9 +122,8 @@ class LeaseSuperseded(APIError):
         message: str = "dispatch lease superseded",
         code: str = "lease_superseded",
         status_code: int = 409,
-        details: dict[str, Any] | None = None,
     ):
-        super().__init__(message, code, status_code, details)
+        super().__init__(message, code, status_code)
 
 
 REFUSAL_TYPE = "rebuno_refusal"
@@ -184,7 +174,6 @@ def raise_for_refusal(exc: BaseException) -> None:
 
 
 def _causes(exc: BaseException | None, limit: int = 10):
-    """``exc`` and the exceptions it was raised from."""
     for _ in range(limit):
         if exc is None:
             return
@@ -197,23 +186,25 @@ _ERROR_BY_CODE: dict[str, type[APIError]] = {
     "validation_error": ValidationError,
     "unauthorized": UnauthorizedError,
     "forbidden": ForbiddenError,
-    "conflict": APIError,
+    "conflict": ConflictError,
     "lease_superseded": LeaseSuperseded,
 }
 
 
-def error_from_response(
-    code: str, message: str, status_code: int, *, rule_id: str = ""
-) -> RebunoError:
-    """Translate a kernel error envelope ({"code", "message"}) into the matching SDK exception.
-
-    Shared by Client and KernelClient so the two HTTP clients can't map the same
-    error code to different exception types.
-    """
+def error_from_response(resp: httpx2.Response) -> RebunoError:
+    """Translate a kernel error envelope ({"code", "message"}) into the matching SDK exception."""
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    code = data.get("code", "internal_error")
+    message = data.get("message", resp.text or "request failed")
     if code == "policy_denied":
-        return PolicyError(message, rule_id=rule_id)
+        return PolicyError(message, rule_id=data.get("rule_id", ""))
+    if code == "execution_terminal":
+        return Terminated(message)
     cls = _ERROR_BY_CODE.get(code, APIError)
-    return cls(message, code=code, status_code=status_code)
+    return cls(message, code=code, status_code=resp.status_code)
 
 
 def failure_reason(exc: BaseException) -> str:

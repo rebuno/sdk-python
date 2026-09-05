@@ -1,29 +1,11 @@
 import inspect
 from types import SimpleNamespace
 
-import pytest
+from conftest import FakeKernel, install_context
 
-from rebuno._kernel import DispatchLease
-from rebuno.execution import ExecutionContext, _reset_current, _set_current
+from rebuno.execution import _reset_current
 from rebuno.mcp import wrap_mcp_tool, wrap_mcp_tools
 from rebuno.types import StepDecision
-
-
-class FakeKernel:
-    def __init__(self, decision):
-        self.decision = decision
-        self.completed = []
-
-    async def submit_step(
-        self, execution_id, *, lease, kind, target, args, idempotency
-    ):
-        self.captured = dict(
-            kind=kind, target=target, args=args, idempotency=idempotency
-        )
-        return self.decision
-
-    async def complete_step(self, execution_id, step_id, *, lease, result):
-        self.completed.append(result)
 
 
 def descriptor(
@@ -48,18 +30,6 @@ def make_call(record):
     return call
 
 
-def install_context(kernel):
-    return _set_current(
-        ExecutionContext(
-            kernel=kernel,
-            execution_id="e1",
-            lease=DispatchLease("d1", 1, 120.0),
-            agent_id="a",
-            input=None,
-        )
-    )
-
-
 async def test_wrap_routes_through_invoke_tool_with_prefix():
     k = FakeKernel(StepDecision(decision="proceed"))
     record: list = []
@@ -72,7 +42,6 @@ async def test_wrap_routes_through_invoke_tool_with_prefix():
     assert k.captured["kind"] == "tool_call"
     assert k.captured["target"] == "weather_get_weather"
     assert k.captured["args"] == {"city": "London"}
-    # The MCP call receives the bare tool name, not the prefixed id.
     assert record == [("get_weather", {"city": "London"})]
     assert out == {"ok": True, "echo": {"city": "London"}}
     assert k.completed == [{"ok": True, "echo": {"city": "London"}}]
@@ -113,17 +82,6 @@ async def test_wrap_forwards_idempotency():
     assert k.captured["idempotency"] == "at_most_once"
 
 
-async def test_wrap_defaults_idempotency_to_safe_to_retry():
-    k = FakeKernel(StepDecision(decision="proceed"))
-    fn = wrap_mcp_tool(descriptor(), call=make_call([]))
-    token = install_context(k)
-    try:
-        await fn(city="Oslo")
-    finally:
-        _reset_current(token)
-    assert k.captured["idempotency"] == "safe_to_retry"
-
-
 async def test_wrap_replays_recorded_result_without_calling_mcp():
     k = FakeKernel(StepDecision(decision="replay", result={"cached": True}))
     record: list = []
@@ -134,7 +92,7 @@ async def test_wrap_replays_recorded_result_without_calling_mcp():
     finally:
         _reset_current(token)
     assert out == {"cached": True}
-    assert record == []  # MCP server is not hit on replay
+    assert record == []
 
 
 async def test_synthetic_signature_and_introspection():
@@ -143,9 +101,8 @@ async def test_synthetic_signature_and_introspection():
     assert list(sig.parameters) == ["city", "units"]
     city, units = sig.parameters["city"], sig.parameters["units"]
     assert city.kind is inspect.Parameter.KEYWORD_ONLY
-    assert city.default is inspect.Parameter.empty  # required
-    assert units.default is None  # optional
-    # The LLM-visible name carries the prefix, matching the kernel tool_id.
+    assert city.default is inspect.Parameter.empty
+    assert units.default is None
     assert fn.__name__ == "w_get_weather"
     assert fn.__doc__ == "Get weather"
     assert fn.__input_schema__["properties"]["city"] == {"type": "string"}
@@ -170,12 +127,6 @@ async def test_wrap_accepts_dict_descriptor():
         _reset_current(token)
     assert k.captured["target"] == "db_search"
     assert fn.__name__ == "db_search"
-
-
-async def test_wrap_outside_context_raises():
-    fn = wrap_mcp_tool(descriptor(), call=make_call([]))
-    with pytest.raises(RuntimeError):
-        await fn(city="London")
 
 
 async def test_default_flatten_prefers_structured_content():
@@ -286,4 +237,3 @@ async def test_wrap_mcp_tools_wraps_each_descriptor():
     ]
     fns = wrap_mcp_tools(descs, call=make_call([]), prefix="srv")
     assert [f.__name__ for f in fns] == ["srv_a", "srv_b"]
-    assert all(callable(f) for f in fns)

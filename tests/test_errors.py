@@ -1,54 +1,59 @@
+import httpx2
+import pytest
+
 from rebuno.errors import (
     APIError,
-    Blocked,
+    ConflictError,
     ForbiddenError,
     NotFoundError,
     PolicyError,
-    RateLimited,
-    RebunoError,
-    Terminated,
-    ToolError,
     UnauthorizedError,
     ValidationError,
     error_from_response,
 )
 
 
-def test_hierarchy():
-    assert issubclass(APIError, RebunoError)
-    assert issubclass(NotFoundError, APIError)
-    for cls in (Blocked, Terminated, RateLimited, ToolError, PolicyError):
-        assert issubclass(cls, RebunoError)
+def response(status, **body):
+    return httpx2.Response(status, json=body)
 
 
-def test_policy_error_reason():
-    p = PolicyError("nope", rule_id="r1")
-    assert p.rule_id == "r1"
-    assert "nope" in str(p)
-
-
-def test_error_from_response_maps_known_codes():
-    assert isinstance(error_from_response("not_found", "x", 404), NotFoundError)
+@pytest.mark.parametrize(
+    ("status", "code", "cls"),
+    [
+        (400, "validation_error", ValidationError),
+        (401, "unauthorized", UnauthorizedError),
+        (403, "forbidden", ForbiddenError),
+        (404, "not_found", NotFoundError),
+        (409, "conflict", ConflictError),
+    ],
+)
+def test_error_from_response_maps_known_codes(status, code, cls):
     assert isinstance(
-        error_from_response("validation_error", "x", 400), ValidationError
+        error_from_response(response(status, code=code, message="x")), cls
     )
-    assert isinstance(error_from_response("unauthorized", "x", 401), UnauthorizedError)
-    assert isinstance(error_from_response("forbidden", "x", 403), ForbiddenError)
-    assert isinstance(error_from_response("conflict", "x", 409), APIError)
 
 
 def test_error_from_response_policy_denied_carries_rule_id():
-    err = error_from_response("policy_denied", "nope", 403, rule_id="r1")
+    err = error_from_response(
+        response(403, code="policy_denied", message="nope", rule_id="r1")
+    )
     assert isinstance(err, PolicyError)
     assert err.rule_id == "r1"
 
 
 def test_error_from_response_unknown_code_falls_back_to_api_error():
-    err = error_from_response("something_new", "weird", 500)
+    err = error_from_response(response(500, code="something_new", message="weird"))
     assert isinstance(err, APIError)
     assert not isinstance(err, (NotFoundError, ValidationError, UnauthorizedError))
     assert err.code == "something_new"
     assert err.status_code == 500
+
+
+def test_error_from_response_without_an_envelope():
+    err = error_from_response(httpx2.Response(502, text="upstream is down"))
+    assert isinstance(err, APIError)
+    assert err.code == "internal_error"
+    assert Exception.__str__(err) == "upstream is down"
 
 
 def test_refusal_reason_stops_at_the_marker_line():

@@ -30,9 +30,8 @@ _REFUSALS: dict[type[RebunoError], tuple[int, str]] = {
 
 _DELTA_FLUSH_BYTES = 2000
 _DELTA_FLUSH_INTERVAL = 0.05
-_DELTA_MAX_CHARS = (
-    1750  # the kernel caps a delta at 7000 bytes; UTF-8 runs to 4 bytes a char
-)
+# the kernel caps a delta at 7000 bytes; UTF-8 runs to 4 bytes a char
+_DELTA_MAX_CHARS = 1750
 
 
 class RebunoTransport(httpx2.AsyncBaseTransport):
@@ -53,8 +52,8 @@ class RebunoTransport(httpx2.AsyncBaseTransport):
 
         payload = _json_body(request)
         if payload is None:
-            # Non-JSON body (file uploads, form posts): not an LLM call we can
-            # identify, pass through untouched.
+            # A non-JSON body (file upload, form post) carries no model to
+            # record the step against.
             return await self._inner.handle_async_request(request)
 
         target = str(payload.get("model") or "")
@@ -79,8 +78,6 @@ class RebunoTransport(httpx2.AsyncBaseTransport):
                 request=request,
             )
 
-        # Whole response (including error statuses): read it, record it, and hand
-        # back a reconstructed response.
         try:
             await resp.aread()
         except Exception as e:
@@ -130,16 +127,13 @@ class _TeeStream(httpx2.AsyncByteStream):
         last_flush = time.monotonic()
         try:
             async for raw in self._resp.aiter_raw():
-                # Accumulate before yielding: a consumer that breaks right after
-                # receiving a chunk never resumes us, so recording after the yield
-                # would drop that chunk from the result.
-                text = self._decoder.decode(
-                    raw
-                )  # incremental: never splits a UTF-8 char
+                # A consumer that breaks right after a chunk never resumes us,
+                # so recording after the yield would drop that chunk.
+                text = self._decoder.decode(raw)  # never splits a UTF-8 char
                 if text:
                     self._chunks.append(text)
                     self._pending += text
-                yield raw  # live to the caller
+                yield raw
                 now = time.monotonic()
                 if (
                     len(self._pending) >= _DELTA_FLUSH_BYTES
@@ -153,8 +147,8 @@ class _TeeStream(httpx2.AsyncByteStream):
         await self._finish()
 
     async def aclose(self) -> None:
-        # A consumer may close without draining to EOF, so __aiter__'s tail may not
-        # run; record here too. _finish is idempotent.
+        # A consumer may close without draining to EOF, so __aiter__'s tail may
+        # not run. _finish is idempotent.
         try:
             await self._finish()
         finally:
@@ -219,7 +213,6 @@ def http_client(**kwargs: Any) -> httpx2.AsyncClient:
 
 
 def _refusal_response(request: httpx2.Request, e: RebunoError) -> httpx2.Response:
-    """A refused decision as an HTTP error carrying the refusal marker."""
     status, decision = _REFUSALS[type(e)]
     # Exception.__str__ skips APIError's display formatting.
     reason = Exception.__str__(e) if isinstance(e, (PolicyError, RateLimited)) else ""
@@ -232,7 +225,6 @@ def _refusal_response(request: httpx2.Request, e: RebunoError) -> httpx2.Respons
 
 
 def _is_event_stream(content_type: str) -> bool:
-    """True for a Server-Sent-Events content type."""
     return content_type.split(";", 1)[0].strip().lower() == "text/event-stream"
 
 
@@ -248,9 +240,6 @@ def _json_body(request: httpx2.Request) -> dict[str, Any] | None:
 
 
 def _replay_response(request: httpx2.Request, record: Any) -> httpx2.Response:
-    """Rebuild a replayed response — as a stream when the recorded response was an
-    event stream (so a replayed streamed call still yields a stream), otherwise as
-    a whole response."""
     if isinstance(record, dict):
         headers = record.get("headers") or {}
         if _is_event_stream(str(headers.get("content-type", ""))):
@@ -259,11 +248,9 @@ def _replay_response(request: httpx2.Request, record: Any) -> httpx2.Response:
 
 
 def _response_from_record(request: httpx2.Request, record: Any) -> httpx2.Response:
-    """Rebuild an httpx2.Response from a recorded provider response.
-
-    Only the status, content-type, and body are reconstructed — hop-by-hop and
-    length/encoding headers are deliberately dropped so a replayed body is never
-    mismatched against a stale ``content-encoding`` or ``content-length``.
+    """Only the status, content-type, and body are reconstructed: dropping the
+    length and encoding headers keeps a replayed body from being mismatched
+    against a stale ``content-encoding`` or ``content-length``.
     """
     status, headers, content = _record_parts(record)
     return httpx2.Response(status, headers=headers, content=content, request=request)
@@ -272,8 +259,6 @@ def _response_from_record(request: httpx2.Request, record: Any) -> httpx2.Respon
 def _stream_response_from_record(
     request: httpx2.Request, record: Any
 ) -> httpx2.Response:
-    """Like :func:`_response_from_record`, but delivers the recorded body as a
-    stream so a replayed streaming call still yields a streaming response."""
     status, headers, content = _record_parts(record)
     return httpx2.Response(
         status, headers=headers, stream=_BytesStream(content), request=request

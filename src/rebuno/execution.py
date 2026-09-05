@@ -44,7 +44,6 @@ class ExecutionContext:
         self.agent_id = agent_id
         self.input = input
         self.status = status
-        # The Blocked or Terminated this context raised, if any.
         self.suspension: Blocked | Terminated | None = None
         self._superseded = False
         try:
@@ -85,13 +84,8 @@ class ExecutionContext:
     async def _submit(
         self, *, kind: str, target: str, args: Any, idempotency: str
     ) -> tuple[str, StepDecision]:
-        """Ask the kernel to decide this effect, and return ``(step_id, decision)``.
-
-        The kernel assigns the step id: it counts occurrences of this effect within
-        the dispatch under its own lock, so concurrent identical calls get distinct
-        steps without any coordination here. ``step_id`` is empty for decisions that
-        recorded no step (``rate_limited``, ``execution_*``), which
-        :meth:`_raise_for_decision` turns into an exception before it is used.
+        """The kernel counts occurrences of this effect under its own lock, so
+        concurrent identical calls get distinct step ids without coordination here.
         """
         dec = await self._on_owner_loop(
             self._kernel.submit_step(
@@ -106,15 +100,13 @@ class ExecutionContext:
         return dec.step_id, dec
 
     def _raise_for_decision(self, dec: StepDecision) -> None:
-        """Map a non-proceed step decision to its control-flow exception.
-
-        Returns normally only for ``proceed``. ``replay`` carries an
+        """Returns normally only for ``proceed``. ``replay`` carries an
         effect-specific result/error and is handled by the caller before this.
         """
         if dec.decision == "denied":
-            raise PolicyError(dec.reason or "policy_denied")
+            raise PolicyError(dec.reason)
         if dec.decision == "rate_limited":
-            raise RateLimited(dec.reason or "rate_limit_exceeded")
+            raise RateLimited(dec.reason)
         if dec.decision in ("blocked", "execution_blocked"):
             self.suspension = Blocked()
             raise self.suspension
@@ -135,7 +127,7 @@ class ExecutionContext:
     ) -> Any:
         """Submit a step and, if the kernel says proceed, run the body.
 
-        ``run`` is called with no arguments — callers close over whatever
+        ``run`` is called with no arguments: callers close over whatever
         inputs the body needs. ``args`` is only the JSON-recorded payload
         used for step identity/hashing, not ``run``'s call signature.
 
@@ -153,7 +145,6 @@ class ExecutionContext:
             return dec.result
         self._raise_for_decision(dec)
 
-        # proceed: run the body, record the outcome.
         if run is None:
             await self._on_owner_loop(
                 self._kernel.complete_step(
@@ -210,7 +201,6 @@ class ExecutionContext:
             )
 
     async def record_llm(self, step_id: str, result: Any) -> None:
-        """Record the assembled streamed response as the step's durable result."""
         await self._on_owner_loop(
             self._kernel.complete_step(
                 self.id, step_id, lease=self._lease, result=result
@@ -218,8 +208,7 @@ class ExecutionContext:
         )
 
     def start_heartbeat(self) -> asyncio.Task:
-        """Start a background lease-renewal task and return it. The caller must
-        cancel it when the effect finishes.
+        """The caller must cancel the returned task when the effect finishes.
 
         Losing the lease cancels the task that started the heartbeat, so a
         handler the kernel has replaced stops instead of working on."""
@@ -227,13 +216,8 @@ class ExecutionContext:
 
     @contextlib.asynccontextmanager
     async def lease(self):
-        """Renew the dispatch lease for the duration of the block, so the kernel
-        doesn't reclaim the dispatch and re-deliver it to a second handler.
-
-        The block must yield to the event loop for the heartbeat to fire — a fully
-        blocking sync body starves it. Everything long in a handler (LLM/provider
-        calls, MCP tools, kernel round-trips) is I/O-bound and async, so this
-        holds; wrap CPU-bound sync work in a thread if it ever doesn't.
+        """A blocking sync body starves the heartbeat: the block must yield to
+        the event loop, or the kernel reclaims the dispatch mid-handler.
         """
         hb = self.start_heartbeat()
         try:
@@ -260,10 +244,8 @@ class ExecutionContext:
             logger.exception("failed to record step failure for step_id=%s", step_id)
 
 
-def _error_message(error: Any) -> str:
-    if isinstance(error, dict):
-        return str(error.get("message") or error.get("reason") or error)
-    return str(error)
+def _error_message(error: dict[str, Any]) -> str:
+    return str(error.get("message") or error.get("reason") or error)
 
 
 _current: ContextVar[ExecutionContext | None] = ContextVar(
@@ -281,9 +263,7 @@ class _ExecutionAccessor:
         return state
 
     def __getattr__(self, name: str) -> Any:
-        raise AttributeError(
-            f"rebuno.execution is called, not read — use execution().{name}"
-        )
+        raise AttributeError(f"rebuno.execution must be called: use execution().{name}")
 
 
 execution = _ExecutionAccessor()

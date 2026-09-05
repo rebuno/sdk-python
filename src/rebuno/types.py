@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 
 class ExecutionStatus(StrEnum):
@@ -15,11 +15,7 @@ class ExecutionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-
-class Execution(_Model):
+class Execution(BaseModel):
     id: str
     agent_id: str = ""
     input: Any = None
@@ -28,7 +24,7 @@ class Execution(_Model):
     failure_reason: str = ""
 
 
-class Step(_Model):
+class Step(BaseModel):
     step_id: str
     execution_id: str = ""
     kind: str = ""
@@ -42,7 +38,7 @@ class Step(_Model):
     error: Any = None
 
 
-class StepDecision(_Model):
+class StepDecision(BaseModel):
     decision: str
     step_id: str = ""
     result: Any = None
@@ -51,7 +47,7 @@ class StepDecision(_Model):
     reason: str = ""
 
 
-class Event(_Model):
+class Event(BaseModel):
     execution_id: str = ""
     event_seq: int = 0
     type: str = ""
@@ -59,7 +55,7 @@ class Event(_Model):
     occurred_at: str = ""
 
 
-class Approval(_Model):
+class Approval(BaseModel):
     id: str
     step_id: str = ""
     execution_id: str = ""

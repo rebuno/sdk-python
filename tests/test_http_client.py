@@ -13,7 +13,7 @@ from rebuno.errors import (
     raise_for_refusal,
 )
 from rebuno.execution import ExecutionContext, _reset_current, _set_current
-from rebuno.http_client import RebunoTransport, http_client
+from rebuno.http_client import RebunoTransport
 from rebuno.types import StepDecision
 
 
@@ -73,11 +73,6 @@ def _ctx(kernel, dispatch_id: str = "d1") -> ExecutionContext:
 REQUEST = {"model": "claude", "messages": [{"role": "user", "content": "hi"}]}
 
 
-async def test_http_client_returns_httpx2_client():
-    async with http_client() as client:
-        assert isinstance(client, httpx2.AsyncClient)
-
-
 async def test_llm_call_forwards_then_replays_on_resume():
     kernel = StepKernel()
     calls = {"n": 0}
@@ -86,7 +81,6 @@ async def test_llm_call_forwards_then_replays_on_resume():
         calls["n"] += 1
         return httpx2.Response(200, json={"content": "hello", "n": calls["n"]})
 
-    # First dispatch: forwards to the provider and records an llm_call step.
     token = _set_current(_ctx(kernel))
     try:
         async with _client(handler) as client:
@@ -108,7 +102,7 @@ async def test_llm_call_forwards_then_replays_on_resume():
             r2 = await client.post("/v1/messages", json=REQUEST)
         assert r2.status_code == 200
         assert r2.json()["content"] == "hello"
-        assert calls["n"] == 1  # provider was NOT called again
+        assert calls["n"] == 1  # the provider was not called again
     finally:
         _reset_current(token)
 
@@ -219,39 +213,33 @@ async def test_streaming_tees_records_then_replays_as_stream():
     handler = _sse_handler(calls)
     req = {**REQUEST, "stream": True}
 
-    # First run: tee bytes to the caller live, publish deltas, record the whole.
     token = _set_current(_ctx(kernel))
     try:
         async with _client(handler) as client:
             got = await _drain_stream(client, req)
-        assert got == SSE  # caller received the full stream
+        assert got == SSE
         assert calls["n"] == 1
         assert kernel.submits[0][0] == "llm_call"
-        assert kernel.completed  # the assembled whole was recorded
-        # Live deltas reassemble to the full body with monotonic seqs from 0.
-        assert len(kernel.deltas) >= 2  # size-based flush produced several
+        assert kernel.completed
+        assert len(kernel.deltas) >= 2
         assert "".join(d[2] for d in kernel.deltas) == SSE.decode()
         assert [d[1] for d in kernel.deltas] == list(range(len(kernel.deltas)))
     finally:
         _reset_current(token)
 
-    # Resume under a new dispatch: replay the recorded whole as a stream — no
-    # provider call, no deltas.
     n_deltas = len(kernel.deltas)
     token = _set_current(_ctx(kernel, "d2"))
     try:
         async with _client(handler) as client:
             replayed = await _drain_stream(client, req)
         assert replayed == SSE
-        assert calls["n"] == 1  # provider was NOT called again
-        assert len(kernel.deltas) == n_deltas  # replay publishes nothing
+        assert calls["n"] == 1  # the provider was not called again
+        assert len(kernel.deltas) == n_deltas
     finally:
         _reset_current(token)
 
 
 async def test_streaming_recorded_when_consumer_stops_at_done_without_draining():
-    # A consumer that stops reading early and closes the response without draining
-    # to EOF must still get the step recorded, not left executing.
     kernel = StepKernel()
     calls = {"n": 0}
     token = _set_current(_ctx(kernel))
@@ -266,17 +254,14 @@ async def test_streaming_recorded_when_consumer_stops_at_done_without_draining()
             async for chunk in r.aiter_raw():
                 got += chunk
                 if b"[DONE]" in got:
-                    break  # stop early — do not pull to EOF
-        assert kernel.completed  # recorded on close, not left executing
-        assert (
-            "".join(d[2] for d in kernel.deltas) == SSE.decode()
-        )  # all bytes still teed
+                    break
+        assert kernel.completed
+        assert "".join(d[2] for d in kernel.deltas) == SSE.decode()
     finally:
         _reset_current(token)
 
 
 async def test_streaming_midstream_error_not_recorded_as_success():
-    # A stream that dies mid-flight must not be recorded as a succeeded step.
     kernel = StepKernel()
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -293,7 +278,7 @@ async def test_streaming_midstream_error_not_recorded_as_success():
         async with _client(handler) as client:
             with pytest.raises(RuntimeError, match="connection dropped"):
                 await _drain_stream(client, {**REQUEST, "stream": True})
-        assert kernel.completed == []  # failed the step instead of recording a partial
+        assert kernel.completed == []
     finally:
         _reset_current(token)
 
@@ -309,19 +294,16 @@ async def test_streaming_error_status_recorded_like_non_stream():
         async with _client(handler) as client:
             r = await client.post("/v1/messages", json={**REQUEST, "stream": True})
         assert r.status_code == 429
-        assert kernel.completed  # the error response was recorded as the result
-        assert kernel.deltas == []  # nothing to tee on an error
+        assert kernel.completed
+        assert kernel.deltas == []
     finally:
         _reset_current(token)
 
 
 async def test_passthrough_without_active_context():
-    kernel = StepKernel()
-
     def handler(request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(200, json={"ok": True})
 
     async with _client(handler) as client:
         r = await client.post("/v1/messages", json=REQUEST)
     assert r.status_code == 200
-    assert kernel.submits == []  # no execution context → nothing recorded

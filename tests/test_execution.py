@@ -147,15 +147,13 @@ async def test_contextvar_proxy():
 async def test_nested_blocked_propagates_without_failing_outer_step():
     k = FakeKernel(
         [
-            StepDecision(decision="proceed"),  # outer step
-            StepDecision(decision="blocked", approval_id="ap1"),  # nested inner step
+            StepDecision(decision="proceed"),
+            StepDecision(decision="blocked", approval_id="ap1"),
         ]
     )
     c = ctx(k)
 
     async def outer_body():
-        # A nested tool/step call on the same context, as happens when a
-        # tool's body itself awaits another @tool or rebuno.step call.
         return await c.invoke_tool("inner", {}, run=None)
 
     with pytest.raises(Blocked):

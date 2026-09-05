@@ -2,14 +2,14 @@
 
 Public surface:
 
-  Agent     — webhook-driven consumer of executions for one agent_id
-  Client    — HTTP client for creating/inspecting executions and approvals
-  tool        — decorator registering an async function as a Rebuno tool
-  wrap_tool   — route an arbitrary (non-decorator) tool through Rebuno
-  step        — record non-deterministic local work as a durable step
-  http_client — an httpx2 client that records LLM calls as durable steps
-  raise_for_refusal — turn a refused LLM call's provider error back into Blocked/PolicyError/...
-  execution   — ambient accessor for the current ExecutionContext
+  Agent: webhook-driven consumer of executions for one agent_id
+  Client: HTTP client for creating/inspecting executions and approvals
+  tool: decorator registering an async function as a Rebuno tool
+  wrap_tool: route an arbitrary (non-decorator) tool through Rebuno
+  step: record non-deterministic local work as a durable step
+  http_client: an httpx2 client that records LLM calls as durable steps
+  raise_for_refusal: turn a refused LLM call's provider error back into Blocked/PolicyError/...
+  execution: ambient accessor for the current ExecutionContext
 """
 
 from rebuno import types
@@ -18,6 +18,7 @@ from rebuno.client import Client
 from rebuno.errors import (
     APIError,
     Blocked,
+    ConflictError,
     ForbiddenError,
     LeaseSuperseded,
     NetworkError,
@@ -53,6 +54,7 @@ __all__ = [
     "ToolError",
     "NetworkError",
     "NotFoundError",
+    "ConflictError",
     "UnauthorizedError",
     "ForbiddenError",
     "ValidationError",

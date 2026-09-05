@@ -85,11 +85,9 @@ class Agent:
     def _build_app(self) -> FastAPI:
         @asynccontextmanager
         async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-            # Close the kernel HTTP client during ASGI shutdown, on the same
-            # event loop that opened its connections. Doing it here (rather than
-            # on a fresh loop after the server stops) avoids touching transports
-            # whose loop has already been torn down.
             yield
+            # ASGI shutdown runs on the loop that opened the kernel client's
+            # connections, so this never touches a torn-down transport.
             await self.close()
 
         app = FastAPI(lifespan=lifespan)
@@ -100,11 +98,13 @@ class Agent:
             sig = request.headers.get("Rebuno-Signature", "")
             if not self._verify(raw, sig):
                 return Response(status_code=401)
-            payload = _safe_json(raw) or {}
-            execution_id = payload.get("execution_id")
-            lease = _lease_from(payload)
-            if not execution_id or lease is None:
-                return Response(status_code=400)
+            payload = json.loads(raw)
+            execution_id = payload["execution_id"]
+            lease = DispatchLease(
+                payload["dispatch_id"],
+                payload["dispatch_attempt"],
+                float(payload["lease_timeout_seconds"]),
+            )
             running = self._tasks.get(execution_id)
             if running is not None:
                 if (
@@ -161,8 +161,7 @@ class Agent:
             except Exception as e:
                 if ctx.suspension is not None:
                     raise ctx.suspension from e
-                # Blocked and Terminated propagate; a denial or rate limit is
-                # rebound onto e and fails the execution below.
+                # A Blocked or Terminated from raise_for_refusal escapes here.
                 try:
                     raise_for_refusal(e)
                 except (PolicyError, RateLimited) as refused:
@@ -185,7 +184,6 @@ class Agent:
             del self._tasks[execution_id]
 
     def _supersede(self, task: asyncio.Task) -> None:
-        """Cancel a replaced handler without waiting on it."""
         task.cancel()
         self._superseded.add(task)
         task.add_done_callback(self._superseded.discard)
@@ -202,7 +200,6 @@ class Agent:
         return [r.task for r in self._tasks.values()] + list(self._superseded)
 
     async def join(self) -> None:
-        """Wait for all in-flight execution handlers to finish (best-effort)."""
         tasks = self._all_tasks()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -228,7 +225,7 @@ class Agent:
             await self._http.aclose()
         except RuntimeError:
             # The transport's event loop was already torn down (e.g. an abrupt
-            # shutdown closed connections out from under us). Nothing left to do.
+            # shutdown closed connections out from under us).
             logger.debug("ignoring transport error during close", exc_info=True)
 
     def run(
@@ -242,23 +239,3 @@ class Agent:
             uvicorn.run(self.app, host=host, port=port)
         finally:
             asyncio.run(self.close())
-
-
-def _safe_json(raw: bytes) -> dict[str, Any] | None:
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _lease_from(payload: dict[str, Any]) -> DispatchLease | None:
-    """The lease a webhook carries, or None if it is unusable."""
-    dispatch_id = payload.get("dispatch_id")
-    attempt = payload.get("dispatch_attempt")
-    if not dispatch_id or type(attempt) is not int or attempt <= 0:
-        return None
-    timeout = payload.get("lease_timeout_seconds")
-    if type(timeout) not in (int, float) or timeout <= 0:
-        return None
-    return DispatchLease(dispatch_id, attempt, float(timeout))
