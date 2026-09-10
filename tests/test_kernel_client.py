@@ -1,21 +1,16 @@
-import hashlib
-import hmac
 import json
+from pathlib import Path
 
 import httpx2
 import pytest
 
 from rebuno._kernel import DispatchLease, KernelClient
-from rebuno.errors import LeaseSuperseded, Terminated
+from rebuno.errors import APIError, LeaseSuperseded, Terminated
 from rebuno.types import StepDecision
 
 SECRET = "dev-secret"
 AGENT = "dev-agent"
 LEASE = DispatchLease("d1", 3, 120.0)
-
-
-def _sig(body: bytes) -> str:
-    return "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
 
 
 @pytest.fixture
@@ -53,7 +48,6 @@ async def test_submit_step_returns_the_kernel_step_id(client, captured):
     req = captured["request"]
     body = captured["body"]
     assert req.headers["Rebuno-Agent-Id"] == AGENT
-    assert req.headers["Rebuno-Signature"] == _sig(body)
     assert json.loads(body)["args"] == {"b": 2, "a": 1}
 
 
@@ -61,7 +55,6 @@ async def test_complete_step_posts_result(client, captured):
     await client.complete_step("e1", "sid123", lease=LEASE, result={"ok": True})
     body = json.loads(captured["body"])
     assert body == {"result": {"ok": True}}
-    assert captured["request"].headers["Rebuno-Signature"] == _sig(captured["body"])
 
 
 @pytest.mark.parametrize(
@@ -134,4 +127,100 @@ async def test_stream_delta_posts_seq_and_data(client, captured):
     assert body == {"seq": 4, "data": "tok"}
     req = captured["request"]
     assert req.url.path == "/v0/executions/e1/steps/sid123/stream"
-    assert req.headers["Rebuno-Signature"] == _sig(captured["body"])
+
+
+async def test_request_signature_vectors(monkeypatch):
+    vectors = json.loads(
+        (Path(__file__).parent / "fixtures/request-signatures.json").read_text()
+    )
+    for vector in vectors:
+        monkeypatch.setattr(
+            "rebuno._kernel.time.time", lambda v=vector: int(v["timestamp"])
+        )
+        captured = []
+
+        def handler(request, captured=captured):
+            captured.append(request)
+            return httpx2.Response(200, json={})
+
+        async with httpx2.AsyncClient(
+            base_url="http://kernel", transport=httpx2.MockTransport(handler)
+        ) as http:
+            client = KernelClient(agent_id=AGENT, secret=vector["secret"], http=http)
+            await client._send(
+                vector["method"],
+                vector["target"],
+                vector["body"].encode(),
+                {
+                    "Rebuno-Dispatch-Id": vector["dispatch_id"],
+                    "Rebuno-Dispatch-Attempt": vector["dispatch_attempt"],
+                },
+            )
+        assert captured[0].headers["Rebuno-Signature"] == vector["signature"]
+
+
+async def test_signature_covers_the_built_url_prefix_and_query(monkeypatch):
+    monkeypatch.setattr("rebuno._kernel.time.time", lambda: 1700000000)
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        return httpx2.Response(200, json={})
+
+    for base_url, params in (
+        ("http://kernel", None),
+        ("http://kernel/prefix/", {"status": "terminal"}),
+    ):
+        async with httpx2.AsyncClient(
+            base_url=base_url, params=params, transport=httpx2.MockTransport(handler)
+        ) as http:
+            client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+            await client._send("GET", "/v0/executions/a%2Fb/steps", b"")
+    assert (
+        captured[1].url.raw_path == b"/prefix/v0/executions/a%2Fb/steps?status=terminal"
+    )
+    assert (
+        captured[0].headers["Rebuno-Signature"]
+        != captured[1].headers["Rebuno-Signature"]
+    )
+
+
+async def test_retry_gets_a_fresh_signature(monkeypatch):
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        return httpx2.Response(503 if len(captured) == 1 else 200, json={})
+
+    async with httpx2.AsyncClient(
+        base_url="http://kernel", transport=httpx2.MockTransport(handler)
+    ) as http:
+        client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+        monkeypatch.setattr("rebuno._kernel.time.time", lambda: 1700000000)
+        with pytest.raises(APIError):
+            await client.heartbeat("e1", lease=LEASE)
+        monkeypatch.setattr("rebuno._kernel.time.time", lambda: 1700000030)
+        await client.heartbeat("e1", lease=LEASE)
+    assert captured[1].headers["Rebuno-Timestamp"] == "1700000030"
+    assert (
+        captured[0].headers["Rebuno-Signature"]
+        != captured[1].headers["Rebuno-Signature"]
+    )
+
+
+async def test_signed_requests_do_not_follow_redirects():
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        return httpx2.Response(307, headers={"Location": "http://other/resource"})
+
+    async with httpx2.AsyncClient(
+        base_url="http://kernel",
+        follow_redirects=True,
+        transport=httpx2.MockTransport(handler),
+    ) as http:
+        client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+        with pytest.raises(APIError):
+            await client.heartbeat("e1", lease=LEASE)
+    assert len(captured) == 1

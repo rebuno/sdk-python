@@ -1,0 +1,35 @@
+[
+  {
+    "name": "empty read",
+    "secret": "test-secret",
+    "method": "GET",
+    "target": "/v0/executions/alpha",
+    "body": "",
+    "timestamp": "1700000000",
+    "dispatch_id": "",
+    "dispatch_attempt": "",
+    "signature": "v1=d0f262ef4226bcdf886ec35a7ce4cf77286055b563078faca8b307caa8ca5839"
+  },
+  {
+    "name": "escaped target and unicode body",
+    "secret": "test-secret",
+    "method": "POST",
+    "target": "/prefix/v0/executions/alpha%2Fbeta/steps?x=a%20b&x=%2F",
+    "body": "{\"text\":\"héllo € 🙂\\n\"}",
+    "timestamp": "1700000000",
+    "dispatch_id": "01920000-0000-7000-8000-000000000001",
+    "dispatch_attempt": "3",
+    "signature": "v1=08e2b66ec89c95a677798a9aa048949c38668f770f28a2beede0591e2860820b"
+  },
+  {
+    "name": "heartbeat",
+    "secret": "test-secret",
+    "method": "POST",
+    "target": "/v0/executions/alpha/heartbeat",
+    "body": "",
+    "timestamp": "1700000000",
+    "dispatch_id": "01920000-0000-7000-8000-000000000001",
+    "dispatch_attempt": "3",
+    "signature": "v1=63a3e161395bd65728afa785799ddb9e52c01f8e0a61d1d6a4089f582d334b0e"
+  }
+]

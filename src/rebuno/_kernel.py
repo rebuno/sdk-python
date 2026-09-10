@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,35 +39,39 @@ class DispatchLease:
 
 
 class KernelClient:
-    """Agent-side kernel client. Signs every request body with the agent secret."""
+    """Agent-side kernel client. Signs each request with the agent secret."""
 
     def __init__(self, *, agent_id: str, secret: str, http: httpx2.AsyncClient):
         self._agent_id = agent_id
         self._secret = secret.encode("utf-8")
         self._http = http
 
-    def _sign(self, body: bytes) -> str:
-        return "sha256=" + hmac.new(self._secret, body, hashlib.sha256).hexdigest()
-
-    def _headers(
-        self, body: bytes, extra: dict[str, str] | None = None
-    ) -> dict[str, str]:
-        h = {
-            "Content-Type": "application/json",
-            "Rebuno-Agent-Id": self._agent_id,
-            "Rebuno-Signature": self._sign(body),
-        }
-        if extra:
-            h.update(extra)
-        return h
+    def _sign(self, request: httpx2.Request) -> str:
+        fields = [
+            "rebuno-request-v1",
+            request.method,
+            request.url.raw_path.decode("ascii"),
+            request.headers["Rebuno-Timestamp"],
+            request.headers.get("Rebuno-Dispatch-Id", ""),
+            request.headers.get("Rebuno-Dispatch-Attempt", ""),
+        ]
+        message = ("\n".join(fields) + "\n").encode() + request.content
+        return "v1=" + hmac.new(self._secret, message, hashlib.sha256).hexdigest()
 
     async def _send(
         self, method: str, path: str, body: bytes, extra: dict[str, str] | None = None
     ) -> httpx2.Response:
-        resp = await self._http.request(
-            method, path, content=body, headers=self._headers(body, extra)
+        request = self._http.build_request(
+            method,
+            path,
+            content=body,
+            headers={"Content-Type": "application/json", **(extra or {})},
         )
-        if resp.status_code >= 400:
+        request.headers["Rebuno-Agent-Id"] = self._agent_id
+        request.headers["Rebuno-Timestamp"] = str(int(time.time()))
+        request.headers["Rebuno-Signature"] = self._sign(request)
+        resp = await self._http.send(request, follow_redirects=False)
+        if resp.status_code >= 300:
             raise error_from_response(resp)
         return resp
 
