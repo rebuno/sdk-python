@@ -104,7 +104,7 @@ class ExecutionContext:
         effect-specific result/error and is handled by the caller before this.
         """
         if dec.decision == "denied":
-            raise PolicyError(dec.reason)
+            raise PolicyError(dec.reason, rule_id=dec.rule_id)
         if dec.decision == "rate_limited":
             raise RateLimited(dec.reason)
         if dec.decision in ("blocked", "execution_blocked"):

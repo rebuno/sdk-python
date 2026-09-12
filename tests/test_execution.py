@@ -83,9 +83,10 @@ async def test_replay_failed_raises_toolerror():
 
 
 async def test_denied_raises_policyerror():
-    k = FakeKernel([StepDecision(decision="denied", reason="nope")])
-    with pytest.raises(PolicyError):
+    k = FakeKernel([StepDecision(decision="denied", reason="nope", rule_id="r1")])
+    with pytest.raises(PolicyError) as caught:
         await ctx(k).invoke_tool("t", {}, run=None)
+    assert caught.value.rule_id == "r1"
 
 
 async def test_blocked_raises_blocked():

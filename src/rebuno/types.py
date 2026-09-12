@@ -45,6 +45,7 @@ class StepDecision(BaseModel):
     error: Any = None
     approval_id: str | None = None
     reason: str = ""
+    rule_id: str = ""
 
 
 class Event(BaseModel):
