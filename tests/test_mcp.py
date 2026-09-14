@@ -129,6 +129,21 @@ async def test_wrap_accepts_dict_descriptor():
     assert fn.__name__ == "db_search"
 
 
+async def test_wrap_accepts_snake_case_input_schema():
+    desc = SimpleNamespace(
+        name="search",
+        description="Search",
+        input_schema={
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        },
+    )
+    fn = wrap_mcp_tool(desc, call=make_call([]))
+    assert list(inspect.signature(fn).parameters) == ["q"]
+    assert fn.__input_schema__ is desc.input_schema
+
+
 async def test_default_flatten_prefers_structured_content():
     k = FakeKernel(StepDecision(decision="proceed"))
 

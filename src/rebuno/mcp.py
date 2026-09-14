@@ -40,8 +40,8 @@ def wrap_mcp_tool(
     """Manufacture a Rebuno-routed callable from one MCP tool descriptor.
 
     Args:
-        descriptor: An MCP tool with ``name``, ``description``, and ``inputSchema``
-            (the spec field names). Attribute or dict access both work, so the
+        descriptor: An MCP tool with ``name``, ``description``, and ``input_schema``
+            or ``inputSchema``. Attribute or dict access both work, so the
             official ``mcp`` SDK's ``Tool``, a fastmcp tool, or a plain dict all fit.
         call: ``call(tool_name, args)``, your MCP client's invocation and the only
             seam to the transport. Receives the bare tool name.
@@ -56,12 +56,14 @@ def wrap_mcp_tool(
 
     Returns:
         A plain async callable (see :func:`rebuno.wrap_tool`) whose ``__name__`` and
-        kernel target are the prefixed id, with the raw ``inputSchema`` on
+        kernel target are the prefixed id, with the raw input schema on
         ``__input_schema__``.
     """
     name = _field(descriptor, "name")
     description = _field(descriptor, "description", default="") or ""
-    schema = _field(descriptor, "inputSchema", default=None) or {}
+    schema = (
+        _field(descriptor, "input_schema") or _field(descriptor, "inputSchema") or {}
+    )
     tool_id = f"{prefix}_{name}" if prefix else name
 
     return wrap_tool(
@@ -88,9 +90,9 @@ def _strip_none(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_flatten(raw: Any) -> Any:
-    structured = getattr(raw, "structured_content", None)  # fastmcp
+    structured = getattr(raw, "structured_content", None)  # fastmcp, mcp>=2
     if structured is None:
-        structured = getattr(raw, "structuredContent", None)  # official SDK
+        structured = getattr(raw, "structuredContent", None)  # mcp<2
     if structured is not None:
         return structured
 
