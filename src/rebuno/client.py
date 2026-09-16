@@ -54,10 +54,14 @@ class Client:
             raise error_from_response(resp)
         return resp
 
-    async def create(self, agent_id: str, input: Any = None) -> Execution:
+    async def create(
+        self, agent_id: str, input: Any = None, *, concurrency_key: str = ""
+    ) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
             body["input"] = input
+        if concurrency_key:
+            body["concurrency_key"] = concurrency_key
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 
