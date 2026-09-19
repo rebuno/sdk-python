@@ -25,6 +25,15 @@ logger = logging.getLogger("rebuno.execution")
 _T = TypeVar("_T")
 
 
+async def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Await ``fn``'s result, running a synchronous ``fn`` in a worker thread."""
+
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    result = await asyncio.to_thread(fn, *args, **kwargs)
+    return await result if inspect.isawaitable(result) else result
+
+
 class ExecutionContext:
     """One per dispatch. Submits effects to the kernel and applies its decisions."""
 

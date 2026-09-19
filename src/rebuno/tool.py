@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import functools
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from rebuno.errors import PolicyError
-from rebuno.execution import _get_current
+from rebuno.execution import _get_current, offload
 
 
 def _refusal_result(tool_id: str, refusal: PolicyError) -> str:
@@ -85,9 +85,7 @@ def wrap_tool(
         args = transform_args(kwargs) if transform_args is not None else dict(kwargs)
 
         async def run() -> Any:
-            result = invoke(args)
-            if isinstance(result, Awaitable):
-                result = await result
+            result = await offload(invoke, args)
             return to_result(result) if to_result is not None else result
 
         try:
@@ -145,7 +143,7 @@ def _build_wrapper(
                 tool_id,
                 arguments,
                 idempotency=idempotency,
-                run=lambda: fn(*bound.args, **bound.kwargs),
+                run=lambda: offload(fn, *bound.args, **bound.kwargs),
             )
         except PolicyError as refusal:
             return _refusal_result(tool_id, refusal)

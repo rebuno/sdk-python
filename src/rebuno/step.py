@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from rebuno.execution import _get_current
+from rebuno.execution import _get_current, offload
 
 
 async def step(
@@ -31,5 +31,9 @@ async def step(
         raise RuntimeError(f"rebuno.step('{name}') called outside an active execution.")
     payload = args or {}
     return await ctx.invoke_tool(
-        name, payload, idempotency=idempotency, run=lambda: fn(**payload), kind="local"
+        name,
+        payload,
+        idempotency=idempotency,
+        run=lambda: offload(fn, **payload),
+        kind="local",
     )

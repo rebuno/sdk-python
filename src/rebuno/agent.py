@@ -25,7 +25,7 @@ from rebuno.errors import (
     failure_reason,
     raise_for_refusal,
 )
-from rebuno.execution import ExecutionContext, _reset_current, _set_current
+from rebuno.execution import ExecutionContext, _reset_current, _set_current, offload
 
 logger = logging.getLogger("rebuno.agent")
 
@@ -151,9 +151,7 @@ class Agent:
                 return
             try:
                 async with ctx.lease():
-                    output = self._process(**kwargs)
-                    if hasattr(output, "__await__"):
-                        output = await output
+                    output = await offload(self._process, **kwargs)
                 if ctx.suspension is not None:
                     raise ctx.suspension
             except (Blocked, Terminated, LeaseSuperseded):

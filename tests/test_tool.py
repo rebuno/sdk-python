@@ -1,4 +1,6 @@
+import asyncio
 import inspect
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -195,3 +197,44 @@ async def test_wrap_tool_outside_context_raises():
     fn = wrap_tool("t", lambda a: None)
     with pytest.raises(RuntimeError):
         await fn()
+
+
+@tool
+def blocking(ms: int) -> str:
+    time.sleep(ms / 1000)
+    return "done"
+
+
+async def test_sync_tool_body_leaves_the_loop_free():
+    k = FakeKernel(StepDecision(decision="proceed"))
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    token = install_context(k)
+    try:
+        assert await blocking(120) == "done"
+    finally:
+        _reset_current(token)
+        ticker.cancel()
+    assert ticks > 0
+
+
+async def test_wrap_tool_awaits_a_sync_invoke_returning_a_coroutine():
+    k = FakeKernel(StepDecision(decision="proceed"))
+
+    async def call(args):
+        return {"got": args}
+
+    fn = wrap_tool("t", lambda args: call(args))
+    token = install_context(k)
+    try:
+        out = await fn(x=1)
+    finally:
+        _reset_current(token)
+    assert out == {"got": {"x": 1}}
