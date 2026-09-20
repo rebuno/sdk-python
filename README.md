@@ -37,14 +37,14 @@ instead of running a second time.
 
 ## Documentation
 
-- [Getting started](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/getting-started.md): install, configuration, the dispatch loop, and a complete example.
-- [Agents](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/agents.md): the `Agent` host, input binding, `run` vs `app`, dispatch and resume, lifecycle.
-- [Tools](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/tools.md): `@tool`, `wrap_tool`, idempotency, blocking work, and wrapping MCP tools.
-- [LLM calls](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/llm-calls.md): `http_client()` and `RebunoTransport`.
-- [Local steps](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/steps.md): `rebuno.step()` for durable local work.
-- [Clients](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/client.md): creating and inspecting executions, and approvals.
-- [Errors](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/errors.md): the exception hierarchy.
-- [How it works](https://github.com/rebuno/rebuno/blob/main/docs/sdk/python/internals.md): step identity, replay, heartbeats, and the kernel protocol.
+- [Getting started](https://docs.rebuno.io/sdk/python/getting-started): install, configuration, the dispatch loop, and a complete example.
+- [Agents](https://docs.rebuno.io/sdk/python/agents): the `Agent` host, input binding, `run` vs `app`, dispatch and resume, lifecycle.
+- [Tools](https://docs.rebuno.io/sdk/python/tools): `@tool`, `wrap_tool`, idempotency, blocking work, and wrapping MCP tools.
+- [LLM calls](https://docs.rebuno.io/sdk/python/llm-calls): `http_client()` and `RebunoTransport`.
+- [Local steps](https://docs.rebuno.io/sdk/python/steps): `rebuno.step()` for durable local work.
+- [Clients](https://docs.rebuno.io/sdk/python/client): creating and inspecting executions, and approvals.
+- [Errors](https://docs.rebuno.io/sdk/python/errors): the exception hierarchy.
+- [How it works](https://docs.rebuno.io/sdk/python/internals): step identity, replay, heartbeats, and the kernel protocol.
 
 ## License
 
