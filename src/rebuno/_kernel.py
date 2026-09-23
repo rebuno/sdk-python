@@ -129,11 +129,20 @@ class KernelClient:
         )
 
     async def stream_delta(
-        self, execution_id: str, step_id: str, *, seq: int, data: str
+        self,
+        execution_id: str,
+        step_id: str,
+        *,
+        lease: DispatchLease,
+        seq: int,
+        data: str,
     ) -> None:
         body = json.dumps({"seq": seq, "data": data}).encode("utf-8")
         await self._send(
-            "POST", f"/v0/executions/{execution_id}/steps/{step_id}/stream", body
+            "POST",
+            f"/v0/executions/{execution_id}/steps/{step_id}/stream",
+            body,
+            lease.headers(),
         )
 
     async def heartbeat(self, execution_id: str, *, lease: DispatchLease) -> None:

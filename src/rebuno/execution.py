@@ -202,7 +202,9 @@ class ExecutionContext:
         failures are logged and swallowed."""
         try:
             await self._on_owner_loop(
-                self._kernel.stream_delta(self.id, step_id, seq=seq, data=data)
+                self._kernel.stream_delta(
+                    self.id, step_id, lease=self._lease, seq=seq, data=data
+                )
             )
         except Exception:
             logger.debug(

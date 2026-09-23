@@ -121,12 +121,14 @@ async def test_terminal_execution_maps_to_its_control_flow_error():
         await client.complete_execution("e1", lease=LEASE, output={})
 
 
-async def test_stream_delta_posts_seq_and_data(client, captured):
-    await client.stream_delta("e1", "sid123", seq=4, data="tok")
+async def test_stream_delta_posts_seq_and_data_under_lease(client, captured):
+    await client.stream_delta("e1", "sid123", lease=LEASE, seq=4, data="tok")
     body = json.loads(captured["body"])
     assert body == {"seq": 4, "data": "tok"}
     req = captured["request"]
     assert req.url.path == "/v0/executions/e1/steps/sid123/stream"
+    assert req.headers["Rebuno-Dispatch-Id"] == "d1"
+    assert req.headers["Rebuno-Dispatch-Attempt"] == "3"
 
 
 async def test_request_signature_vectors(monkeypatch):

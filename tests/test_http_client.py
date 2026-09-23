@@ -51,7 +51,7 @@ class StepKernel:
     async def heartbeat(self, execution_id, *, lease):
         pass
 
-    async def stream_delta(self, execution_id, step_id, *, seq, data):
+    async def stream_delta(self, execution_id, step_id, *, lease, seq, data):
         self.deltas.append((step_id, seq, data))
 
 
