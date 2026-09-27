@@ -1,3 +1,5 @@
+import json
+
 import httpx2
 import pytest
 
@@ -30,6 +32,20 @@ async def test_create_execution():
     exec = await c.create("a", input={"x": 1})
     assert isinstance(exec, Execution)
     assert exec.id == "e1"
+
+
+async def test_fork_sends_the_fork_point():
+    def handler(req):
+        assert req.url.path == "/v0/executions/e1/fork"
+        assert json.loads(req.content) == {"at_seq": 7, "session": "retry"}
+        return httpx2.Response(
+            201,
+            json={"id": "e2", "status": "running", "forked_from": "e1", "fork_seq": 7},
+        )
+
+    c = make_client(handler)
+    fork = await c.fork("e1", at_seq=7, session="retry")
+    assert (fork.forked_from, fork.fork_seq) == ("e1", 7)
 
 
 async def test_cancel_and_approvals():

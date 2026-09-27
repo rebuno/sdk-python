@@ -24,6 +24,8 @@ class Execution(BaseModel):
     failure_reason: str = ""
     session: str = ""
     parent_execution_id: str | None = None
+    forked_from: str | None = None
+    fork_seq: int = 0
 
 
 class Step(BaseModel):

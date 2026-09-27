@@ -55,13 +55,20 @@ class Client:
         return resp
 
     async def create(
-        self, agent_id: str, input: Any = None, *, session: str = ""
+        self,
+        agent_id: str,
+        input: Any = None,
+        *,
+        session: str = "",
+        parent_execution_id: str = "",
     ) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
             body["input"] = input
         if session:
             body["session"] = session
+        if parent_execution_id:
+            body["parent_execution_id"] = parent_execution_id
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 
@@ -83,6 +90,24 @@ class Client:
 
     async def cancel(self, execution_id: str) -> None:
         await self._request("POST", f"/v0/executions/{execution_id}/cancel")
+
+    async def fork(
+        self,
+        execution_id: str,
+        *,
+        at_seq: int,
+        session: str = "",
+        policy_bundle: str = "",
+    ) -> Execution:
+        body: dict[str, Any] = {"at_seq": at_seq}
+        if session:
+            body["session"] = session
+        if policy_bundle:
+            body["policy_bundle"] = policy_bundle
+        resp = await self._request(
+            "POST", f"/v0/executions/{execution_id}/fork", json=body
+        )
+        return Execution.model_validate(resp.json())
 
     async def get_step(self, execution_id: str, step_id: str) -> Step:
         resp = await self._request(
