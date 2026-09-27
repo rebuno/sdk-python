@@ -10,6 +10,8 @@ Public surface:
   http_client: an httpx2 client that records LLM calls as durable steps
   raise_for_refusal: turn a refused LLM call's provider error back into Blocked/PolicyError/...
   execution: ambient accessor for the current ExecutionContext
+  previous: the state the previous execution in the session completed with
+  Result: a handler return value carrying output and state for the session
 """
 
 from rebuno import types
@@ -33,7 +35,7 @@ from rebuno.errors import (
     failure_reason,
     raise_for_refusal,
 )
-from rebuno.execution import execution
+from rebuno.execution import Result, execution, previous
 from rebuno.http_client import RebunoTransport, http_client
 from rebuno.step import step
 from rebuno.tool import tool, wrap_tool
@@ -47,6 +49,8 @@ __all__ = [
     "http_client",
     "RebunoTransport",
     "execution",
+    "previous",
+    "Result",
     "types",
     "RebunoError",
     "APIError",

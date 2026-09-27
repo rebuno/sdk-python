@@ -22,7 +22,8 @@ class Execution(BaseModel):
     status: ExecutionStatus = ExecutionStatus.PENDING
     output: Any = None
     failure_reason: str = ""
-    concurrency_key: str = ""
+    session: str = ""
+    parent_execution_id: str | None = None
 
 
 class Step(BaseModel):

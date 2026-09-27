@@ -79,6 +79,10 @@ class KernelClient:
         resp = await self._send("GET", f"/v0/executions/{execution_id}", b"")
         return Execution.model_validate(resp.json())
 
+    async def previous_state(self, execution_id: str) -> Any:
+        resp = await self._send("GET", f"/v0/executions/{execution_id}/previous", b"")
+        return resp.json()["state"]
+
     async def get_step(self, execution_id: str, step_id: str) -> Step | None:
         try:
             resp = await self._send(
@@ -151,9 +155,12 @@ class KernelClient:
         )
 
     async def complete_execution(
-        self, execution_id: str, *, lease: DispatchLease, output: Any
+        self, execution_id: str, *, lease: DispatchLease, output: Any, state: Any = None
     ) -> None:
-        body = json.dumps({"output": output}).encode("utf-8")
+        payload: dict[str, Any] = {"output": output}
+        if state is not None:
+            payload["state"] = state
+        body = json.dumps(payload).encode("utf-8")
         await self._send(
             "POST", f"/v0/executions/{execution_id}/complete", body, lease.headers()
         )

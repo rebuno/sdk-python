@@ -6,6 +6,7 @@ import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from rebuno._kernel import DispatchLease
@@ -76,6 +77,9 @@ class ExecutionContext:
         return await asyncio.wrap_future(
             asyncio.run_coroutine_threadsafe(coro, self._loop)
         )
+
+    async def previous(self) -> Any:
+        return await self._on_owner_loop(self._kernel.previous_state(self.id))
 
     async def _heartbeat_loop(self, owner: asyncio.Task | None) -> None:
         while True:
@@ -278,6 +282,16 @@ class _ExecutionAccessor:
 
 
 execution = _ExecutionAccessor()
+
+
+@dataclass
+class Result:
+    output: Any = None
+    state: Any = None
+
+
+async def previous() -> Any:
+    return await execution().previous()
 
 
 def _set_current(state: ExecutionContext | None) -> Any:

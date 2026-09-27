@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from rebuno.agent import Agent
 from rebuno.errors import Blocked, LeaseSuperseded, RateLimited, ToolError
+from rebuno.execution import Result, previous
 
 SECRET = "dev-secret"
 
@@ -31,8 +32,9 @@ class FakeKernel:
             id=execution_id, agent_id="a", input=self._input, status="running"
         )
 
-    async def complete_execution(self, execution_id, *, lease, output):
+    async def complete_execution(self, execution_id, *, lease, output, state=None):
         self.completed = output
+        self.state = state
 
     async def fail_execution(self, execution_id, *, lease, error):
         self.failed = error
@@ -102,6 +104,29 @@ async def test_completes_execution():
     k = FakeKernel({"prompt": "hi"})
     await run_dispatch(_process_ok, k)
     assert k.completed == {"answer": "HI"}
+
+
+async def test_result_separates_output_from_session_state():
+    async def proc(prompt: str):
+        return Result(output={"answer": prompt}, state={"turns": [prompt]})
+
+    k = FakeKernel({"prompt": "hi"})
+    await run_dispatch(proc, k)
+    assert k.completed == {"answer": "hi"}
+    assert k.state == {"turns": ["hi"]}
+
+
+async def test_previous_returns_the_parent_state():
+    class SessionKernel(FakeKernel):
+        async def previous_state(self, execution_id):
+            return {"turns": ["earlier"]}
+
+    async def proc(prompt: str):
+        return (await previous())["turns"] + [prompt]
+
+    k = SessionKernel({"prompt": "hi"})
+    await run_dispatch(proc, k)
+    assert k.completed == ["earlier", "hi"]
 
 
 async def test_blocked_parks_the_execution():
@@ -269,7 +294,7 @@ async def test_a_superseded_handler_does_not_fail_the_execution():
     that refusal, leaving the execution to the attempt that replaced it."""
 
     class SupersedingKernel(FakeKernel):
-        async def complete_execution(self, execution_id, *, lease, output):
+        async def complete_execution(self, execution_id, *, lease, output, state=None):
             raise LeaseSuperseded
 
     async def proc(prompt: str):
@@ -286,7 +311,7 @@ async def test_distinct_executions_run_concurrently():
             super().__init__(input)
             self.all: list[str] = []
 
-        async def complete_execution(self, execution_id, *, lease, output):
+        async def complete_execution(self, execution_id, *, lease, output, state=None):
             self.all.append(execution_id)
 
     agent = make_agent(_process_ok)

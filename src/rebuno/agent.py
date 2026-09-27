@@ -25,7 +25,13 @@ from rebuno.errors import (
     failure_reason,
     raise_for_refusal,
 )
-from rebuno.execution import ExecutionContext, _reset_current, _set_current, offload
+from rebuno.execution import (
+    ExecutionContext,
+    Result,
+    _reset_current,
+    _set_current,
+    offload,
+)
 
 logger = logging.getLogger("rebuno.agent")
 
@@ -170,8 +176,11 @@ class Agent:
                     execution_id, lease=lease, error=failure_reason(e)
                 )
                 return
+            state = None
+            if isinstance(output, Result):
+                output, state = output.output, output.state
             await self._kernel.complete_execution(
-                execution_id, lease=lease, output=output
+                execution_id, lease=lease, output=output, state=state
             )
         finally:
             _reset_current(token)

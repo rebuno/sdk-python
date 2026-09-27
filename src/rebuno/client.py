@@ -55,13 +55,13 @@ class Client:
         return resp
 
     async def create(
-        self, agent_id: str, input: Any = None, *, concurrency_key: str = ""
+        self, agent_id: str, input: Any = None, *, session: str = ""
     ) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
             body["input"] = input
-        if concurrency_key:
-            body["concurrency_key"] = concurrency_key
+        if session:
+            body["session"] = session
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 

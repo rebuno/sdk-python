@@ -51,6 +51,25 @@ async def test_submit_step_returns_the_kernel_step_id(client, captured):
     assert json.loads(body)["args"] == {"b": 2, "a": 1}
 
 
+async def test_complete_execution_sends_state_only_when_given(client, captured):
+    await client.complete_execution("e1", lease=LEASE, output={"a": 1})
+    assert json.loads(captured["body"]) == {"output": {"a": 1}}
+    await client.complete_execution("e1", lease=LEASE, output={"a": 1}, state=[1])
+    assert json.loads(captured["body"]) == {"output": {"a": 1}, "state": [1]}
+
+
+async def test_previous_state_reads_the_parent_state():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/v0/executions/e2/previous"
+        return httpx2.Response(200, json={"state": {"turns": 1}})
+
+    http = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="http://k"
+    )
+    client = KernelClient(agent_id=AGENT, secret=SECRET, http=http)
+    assert await client.previous_state("e2") == {"turns": 1}
+
+
 async def test_complete_step_posts_result(client, captured):
     await client.complete_step("e1", "sid123", lease=LEASE, result={"ok": True})
     body = json.loads(captured["body"])
