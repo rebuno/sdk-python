@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from rebuno._internal.checkpoints import capture
 from rebuno._kernel import DispatchLease
 from rebuno.errors import (
     Blocked,
@@ -24,15 +25,6 @@ from rebuno.types import StepDecision
 logger = logging.getLogger("rebuno.execution")
 
 _T = TypeVar("_T")
-
-
-async def offload(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-    """Await ``fn``'s result, running a synchronous ``fn`` in a worker thread."""
-
-    if inspect.iscoroutinefunction(fn):
-        return await fn(*args, **kwargs)
-    result = await asyncio.to_thread(fn, *args, **kwargs)
-    return await result if inspect.isawaitable(result) else result
 
 
 class ExecutionContext:
@@ -56,6 +48,8 @@ class ExecutionContext:
         self.status = status
         self.suspension: Blocked | Terminated | None = None
         self._superseded = False
+        self._resources: dict[str, dict[str, Any]] = {}
+        self._effects = asyncio.Lock()
         try:
             self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
@@ -94,12 +88,35 @@ class ExecutionContext:
             except Exception:
                 logger.warning("dispatch heartbeat failed", exc_info=True)
 
+    @contextlib.asynccontextmanager
+    async def _exclusive(self, needed: bool = True):
+        """Tools may run on another loop, so the lock is taken and released on
+        the owner loop."""
+        if not needed:
+            yield
+            return
+        await self._on_owner_loop(self._effects.acquire())
+        try:
+            yield
+        finally:
+            if self._loop is None or asyncio.get_running_loop() is self._loop:
+                self._effects.release()
+            else:
+                self._loop.call_soon_threadsafe(self._effects.release)
+
     async def _submit(
-        self, *, kind: str, target: str, args: Any, idempotency: str
+        self,
+        *,
+        kind: str,
+        target: str,
+        args: Any,
+        idempotency: str,
+        resources: list[str] | None = None,
     ) -> tuple[str, StepDecision]:
         """The kernel counts occurrences of this effect under its own lock, so
         concurrent identical calls get distinct step ids without coordination here.
         """
+        declared = {} if resources is None else {"resources": resources}
         dec = await self._on_owner_loop(
             self._kernel.submit_step(
                 self.id,
@@ -108,6 +125,7 @@ class ExecutionContext:
                 target=target,
                 args=args,
                 idempotency=idempotency,
+                **declared,
             )
         )
         return dec.step_id, dec
@@ -137,6 +155,7 @@ class ExecutionContext:
         idempotency: str = "safe_to_retry",
         run: Callable[[], Any] | None = None,
         kind: str = "tool_call",
+        resources: list[str] | None = None,
     ) -> Any:
         """Submit a step and, if the kernel says proceed, run the body.
 
@@ -145,43 +164,47 @@ class ExecutionContext:
         used for step identity/hashing, not ``run``'s call signature.
 
         ``kind`` is the step kind the kernel records and policy matches on.
+
+        ``resources`` names the registered resources the body may change.
+        Defaults to none.
         """
-        step_id, dec = await self._submit(
-            kind=kind, target=target, args=args, idempotency=idempotency
-        )
+        async with self._exclusive(bool(self._resources)):
+            step_id, dec = await self._submit(
+                kind=kind,
+                target=target,
+                args=args,
+                idempotency=idempotency,
+                resources=resources,
+            )
+            due = [r for r in dec.resources if r.due]
 
-        if dec.decision == "replay":
-            if dec.error is not None:
-                raise ToolError(
-                    _error_message(dec.error), tool_id=target, step_id=step_id
-                )
-            return dec.result
-        self._raise_for_decision(dec)
+            if dec.decision == "replay":
+                if dec.error is not None:
+                    raise ToolError(
+                        _error_message(dec.error), tool_id=target, step_id=step_id
+                    )
+                return dec.result
+            self._raise_for_decision(dec)
 
-        if run is None:
+            try:
+                result = run() if run is not None else None
+                if inspect.isawaitable(result):
+                    result = await result
+            except (Blocked, Terminated, PolicyError, RateLimited, LeaseSuperseded):
+                raise
+            except Exception as e:
+                captures = await capture(self, due)
+                await self._fail_step_quietly(step_id, e, **captures)
+                if isinstance(e, ToolError):
+                    raise
+                raise ToolError(str(e), tool_id=target, step_id=step_id) from e
+            captures = await capture(self, due)
             await self._on_owner_loop(
                 self._kernel.complete_step(
-                    self.id, step_id, lease=self._lease, result=None
+                    self.id, step_id, lease=self._lease, result=result, **captures
                 )
             )
-            return None
-        try:
-            result = run()
-            if inspect.isawaitable(result):
-                result = await result
-        except (Blocked, Terminated, PolicyError, RateLimited, LeaseSuperseded):
-            raise
-        except Exception as e:
-            await self._fail_step_quietly(step_id, e)
-            if isinstance(e, ToolError):
-                raise
-            raise ToolError(str(e), tool_id=target, step_id=step_id) from e
-        await self._on_owner_loop(
-            self._kernel.complete_step(
-                self.id, step_id, lease=self._lease, result=result
-            )
-        )
-        return result
+            return result
 
     async def begin_llm(self, target: str, request: Any) -> tuple[str, StepDecision]:
         """Submit an ``llm_call`` step and return ``(step_id, decision)``.
@@ -246,11 +269,17 @@ class ExecutionContext:
             with contextlib.suppress(asyncio.CancelledError):
                 await hb
 
-    async def _fail_step_quietly(self, step_id: str, error: Exception) -> None:
+    async def _fail_step_quietly(
+        self, step_id: str, error: Exception, **captures: Any
+    ) -> None:
         try:
             await self._on_owner_loop(
                 self._kernel.fail_step(
-                    self.id, step_id, lease=self._lease, error={"message": str(error)}
+                    self.id,
+                    step_id,
+                    lease=self._lease,
+                    error={"message": str(error)},
+                    **captures,
                 )
             )
         except LeaseSuperseded:

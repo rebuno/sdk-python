@@ -34,7 +34,8 @@ def client(captured):
     return KernelClient(agent_id=AGENT, secret=SECRET, http=http)
 
 
-async def test_submit_step_returns_the_kernel_step_id(client, captured):
+@pytest.mark.parametrize("resources", [None, [], ["workspace"]])
+async def test_submit_step_returns_the_kernel_step_id(client, captured, resources):
     dec = await client.submit_step(
         "e1",
         lease=LEASE,
@@ -42,6 +43,7 @@ async def test_submit_step_returns_the_kernel_step_id(client, captured):
         target="t",
         args={"b": 2, "a": 1},
         idempotency="safe_to_retry",
+        resources=resources,
     )
     assert isinstance(dec, StepDecision)
     assert dec.step_id == "sid123"
@@ -49,6 +51,7 @@ async def test_submit_step_returns_the_kernel_step_id(client, captured):
     body = captured["body"]
     assert req.headers["Rebuno-Agent-Id"] == AGENT
     assert json.loads(body)["args"] == {"b": 2, "a": 1}
+    assert json.loads(body)["resources"] == (resources or [])
 
 
 async def test_complete_execution_sends_state_only_when_given(client, captured):

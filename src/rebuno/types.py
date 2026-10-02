@@ -26,6 +26,7 @@ class Execution(BaseModel):
     parent_execution_id: str | None = None
     forked_from: str | None = None
     fork_seq: int = 0
+    restoration: dict[str, dict[str, Any]] | None = None
 
 
 class Step(BaseModel):
@@ -42,6 +43,12 @@ class Step(BaseModel):
     error: Any = None
 
 
+class StepResource(BaseModel):
+    key: str
+    generation: int = 0
+    due: bool = False
+
+
 class StepDecision(BaseModel):
     decision: str
     step_id: str = ""
@@ -50,6 +57,17 @@ class StepDecision(BaseModel):
     approval_id: str | None = None
     reason: str = ""
     rule_id: str = ""
+    resources: list[StepResource] = []
+
+
+class Resource(BaseModel):
+    key: str
+    generation: int = 0
+    binding: Any = None
+    checkpoint_ref: str = ""
+    covered: bool = False
+    every_steps: int = 1
+    on_completion: bool = True
 
 
 class Event(BaseModel):

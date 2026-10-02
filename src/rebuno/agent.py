@@ -14,6 +14,8 @@ import httpx2
 from fastapi import FastAPI, Request, Response
 
 from rebuno._internal import InputBinder
+from rebuno._internal.call import offload
+from rebuno._internal.checkpoints import checkpoint_on_completion
 from rebuno._kernel import DispatchLease, KernelClient
 from rebuno.errors import (
     Blocked,
@@ -30,7 +32,6 @@ from rebuno.execution import (
     Result,
     _reset_current,
     _set_current,
-    offload,
 )
 
 logger = logging.getLogger("rebuno.agent")
@@ -158,6 +159,8 @@ class Agent:
             try:
                 async with ctx.lease():
                     output = await offload(self._process, **kwargs)
+                    if ctx.suspension is None:
+                        await checkpoint_on_completion(ctx)
                 if ctx.suspension is not None:
                     raise ctx.suspension
             except (Blocked, Terminated, LeaseSuperseded):

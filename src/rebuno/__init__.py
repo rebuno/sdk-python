@@ -10,6 +10,8 @@ Public surface:
   http_client: an httpx2 client that records LLM calls as durable steps
   raise_for_refusal: turn a refused LLM call's provider error back into Blocked/PolicyError/...
   execution: ambient accessor for the current ExecutionContext
+  resource: register an external resource the SDK checkpoints and restores on a fork
+  CheckpointPolicy: when a resource is captured
   previous: the state the previous execution in the session completed with
   Result: a handler return value carrying output and state for the session
 """
@@ -20,6 +22,7 @@ from rebuno.client import Client
 from rebuno.errors import (
     APIError,
     Blocked,
+    CheckpointUnavailable,
     ConflictError,
     ForbiddenError,
     LeaseSuperseded,
@@ -37,6 +40,7 @@ from rebuno.errors import (
 )
 from rebuno.execution import Result, execution, previous
 from rebuno.http_client import RebunoTransport, http_client
+from rebuno.resource import CheckpointPolicy, resource
 from rebuno.step import step
 from rebuno.tool import tool, wrap_tool
 
@@ -48,6 +52,9 @@ __all__ = [
     "step",
     "http_client",
     "RebunoTransport",
+    "resource",
+    "CheckpointPolicy",
+    "CheckpointUnavailable",
     "execution",
     "previous",
     "Result",

@@ -10,7 +10,7 @@ from typing import Any
 import httpx2
 
 from rebuno.errors import NotFoundError, error_from_response
-from rebuno.types import Execution, Step, StepDecision
+from rebuno.types import Execution, Resource, Step, StepDecision
 
 MAX_HEARTBEAT_INTERVAL = 30.0
 
@@ -101,19 +101,31 @@ class KernelClient:
         target: str,
         args: Any,
         idempotency: str,
+        resources: list[str] | None = None,
     ) -> StepDecision:
-        body = json.dumps(
-            {"kind": kind, "target": target, "args": args, "idempotency": idempotency}
-        ).encode("utf-8")
+        payload = {
+            "kind": kind,
+            "target": target,
+            "args": args,
+            "idempotency": idempotency,
+            "resources": resources or [],
+        }
+        body = json.dumps(payload).encode("utf-8")
         resp = await self._send(
             "POST", f"/v0/executions/{execution_id}/steps", body, lease.headers()
         )
         return StepDecision.model_validate(resp.json())
 
     async def complete_step(
-        self, execution_id: str, step_id: str, *, lease: DispatchLease, result: Any
+        self,
+        execution_id: str,
+        step_id: str,
+        *,
+        lease: DispatchLease,
+        result: Any,
+        **captures: Any,
     ) -> None:
-        body = json.dumps({"result": result}).encode("utf-8")
+        body = json.dumps({"result": result, **captures}).encode("utf-8")
         await self._send(
             "POST",
             f"/v0/executions/{execution_id}/steps/{step_id}/complete",
@@ -122,9 +134,15 @@ class KernelClient:
         )
 
     async def fail_step(
-        self, execution_id: str, step_id: str, *, lease: DispatchLease, error: Any
+        self,
+        execution_id: str,
+        step_id: str,
+        *,
+        lease: DispatchLease,
+        error: Any,
+        **captures: Any,
     ) -> None:
-        body = json.dumps({"error": error}).encode("utf-8")
+        body = json.dumps({"error": error, **captures}).encode("utf-8")
         await self._send(
             "POST",
             f"/v0/executions/{execution_id}/steps/{step_id}/fail",
@@ -145,6 +163,55 @@ class KernelClient:
         await self._send(
             "POST",
             f"/v0/executions/{execution_id}/steps/{step_id}/stream",
+            body,
+            lease.headers(),
+        )
+
+    async def register_resource(
+        self,
+        execution_id: str,
+        *,
+        lease: DispatchLease,
+        key: str,
+        driver_id: str,
+        configuration: Any,
+        coverage_reuse: bool,
+        every_steps: int,
+        on_completion: bool,
+    ) -> Resource:
+        body = json.dumps(
+            {
+                "key": key,
+                "driver_id": driver_id,
+                "configuration": configuration,
+                "coverage_reuse": coverage_reuse,
+                "every_steps": every_steps,
+                "on_completion": on_completion,
+            }
+        ).encode("utf-8")
+        resp = await self._send(
+            "POST", f"/v0/executions/{execution_id}/resources", body, lease.headers()
+        )
+        return Resource.model_validate(resp.json())
+
+    async def bind_resource(
+        self, execution_id: str, key: str, *, lease: DispatchLease, binding: Any
+    ) -> None:
+        body = json.dumps({"binding": binding}).encode("utf-8")
+        await self._send(
+            "POST",
+            f"/v0/executions/{execution_id}/resources/{key}/binding",
+            body,
+            lease.headers(),
+        )
+
+    async def publish_checkpoints(
+        self, execution_id: str, *, lease: DispatchLease, **captures: Any
+    ) -> None:
+        body = json.dumps(captures).encode("utf-8")
+        await self._send(
+            "POST",
+            f"/v0/executions/{execution_id}/resources/checkpoints",
             body,
             lease.headers(),
         )

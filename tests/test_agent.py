@@ -8,9 +8,11 @@ import pytest
 from httpx2 import ASGITransport, AsyncClient
 from pydantic import BaseModel
 
+from rebuno import CheckpointUnavailable, resource
 from rebuno.agent import Agent
 from rebuno.errors import Blocked, LeaseSuperseded, RateLimited, ToolError
 from rebuno.execution import Result, previous
+from rebuno.types import Resource
 
 SECRET = "dev-secret"
 
@@ -146,6 +148,27 @@ async def test_process_exception_fails_execution():
     k = FakeKernel({"prompt": "hi"})
     await run_dispatch(proc, k)
     assert k.failed and "boom" in k.failed
+
+
+async def test_missing_resource_checkpoint_fails_execution():
+    class ForkKernel(FakeKernel):
+        async def register_resource(self, execution_id, *, lease, **registration):
+            return Resource(key="workspace", checkpoint_ref="snap-5", covered=True)
+
+    class Driver:
+        driver_id = "test.v1"
+
+        async def create(self, checkpoint_ref=None):
+            assert checkpoint_ref == "snap-5"
+            raise CheckpointUnavailable("expired")
+
+    async def proc(prompt: str):
+        await resource("workspace", driver=Driver())
+
+    k = ForkKernel({"prompt": "hi"})
+    await run_dispatch(proc, k)
+    assert k.completed is None
+    assert k.failed == "agent_error: CheckpointUnavailable: expired"
 
 
 async def test_tool_failure_reason_names_the_tool():

@@ -126,6 +126,10 @@ class LeaseSuperseded(APIError):
         super().__init__(message, code, status_code)
 
 
+class CheckpointUnavailable(RebunoError):
+    """Raised by a resource driver's ``create`` when its checkpoint is gone."""
+
+
 REFUSAL_TYPE = "rebuno_refusal"
 
 _REFUSAL_RE = re.compile(rf"{REFUSAL_TYPE}: (\w+)(?: reason=(.*))?")

@@ -5,8 +5,9 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
+from rebuno._internal.call import offload
 from rebuno.errors import PolicyError
-from rebuno.execution import _get_current, offload
+from rebuno.execution import _get_current
 
 
 def _refusal_result(tool_id: str, refusal: PolicyError) -> str:
@@ -17,17 +18,21 @@ def tool(
     tool_id: str | Callable[..., Any] | None = None,
     *,
     idempotency: str = "safe_to_retry",
+    resources: list[str] | None = None,
 ) -> Any:
     """Register an async function as a Rebuno tool.
 
     Usable as ``@tool``, ``@tool()``, ``@tool("custom_id")``, or
     ``@tool("id", idempotency="at_most_once")``. The wrapped callable keeps the
     original signature so frameworks bind it unchanged.
+
+    ``resources`` names the registered resources the tool may change.
+    Defaults to none.
     """
 
     def decorate(fn: Callable[..., Any], explicit_id: str | None) -> Callable[..., Any]:
         resolved_id = explicit_id if explicit_id is not None else fn.__name__
-        return _build_wrapper(resolved_id, fn, idempotency)
+        return _build_wrapper(resolved_id, fn, idempotency, resources)
 
     if callable(tool_id):
         return decorate(tool_id, None)
@@ -49,6 +54,7 @@ def wrap_tool(
     idempotency: str = "safe_to_retry",
     to_result: Callable[[Any], Any] | None = None,
     transform_args: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    resources: list[str] | None = None,
 ) -> Callable[..., Any]:
     """Wrap an arbitrary tool as a Rebuno-routed callable.
 
@@ -72,6 +78,8 @@ def wrap_tool(
             before it is recorded as the step result. Defaults to identity.
         transform_args: Maps the caller's argument dict before it is recorded and
             passed to ``invoke``. Defaults to identity. (e.g. null-stripping.)
+        resources: The registered resources the tool may change.
+            Defaults to none.
     """
     schema = args_schema or {}
 
@@ -89,7 +97,9 @@ def wrap_tool(
             return to_result(result) if to_result is not None else result
 
         try:
-            return await ctx.invoke_tool(name, args, idempotency=idempotency, run=run)
+            return await ctx.invoke_tool(
+                name, args, idempotency=idempotency, run=run, resources=resources
+            )
         except PolicyError as refusal:
             return _refusal_result(name, refusal)
 
@@ -123,7 +133,10 @@ def _signature_from_schema(schema: dict[str, Any]) -> inspect.Signature:
 
 
 def _build_wrapper(
-    tool_id: str, fn: Callable[..., Any], idempotency: str
+    tool_id: str,
+    fn: Callable[..., Any],
+    idempotency: str,
+    resources: list[str] | None,
 ) -> Callable[..., Any]:
     sig = inspect.signature(fn)
 
@@ -144,6 +157,7 @@ def _build_wrapper(
                 arguments,
                 idempotency=idempotency,
                 run=lambda: offload(fn, *bound.args, **bound.kwargs),
+                resources=resources,
             )
         except PolicyError as refusal:
             return _refusal_result(tool_id, refusal)

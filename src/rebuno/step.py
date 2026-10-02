@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from rebuno.execution import _get_current, offload
+from rebuno._internal.call import offload
+from rebuno.execution import _get_current
 
 
 async def step(
@@ -11,6 +12,7 @@ async def step(
     fn: Callable[..., Any],
     args: dict[str, Any] | None = None,
     idempotency: str = "safe_to_retry",
+    resources: list[str] | None = None,
 ) -> Any:
     """Record non-deterministic local work as a durable step.
 
@@ -25,6 +27,9 @@ async def step(
     ``args`` is the JSON-recorded payload used for step identity/hashing. It is
     passed to ``fn`` as ``fn(**args)`` when the step runs; pass ``None`` (the
     default) when ``fn`` takes no arguments.
+
+    ``resources`` names the registered resources ``fn`` may change.
+    Defaults to none.
     """
     ctx = _get_current()
     if ctx is None:
@@ -36,4 +41,5 @@ async def step(
         idempotency=idempotency,
         run=lambda: offload(fn, **payload),
         kind="local",
+        resources=resources,
     )
