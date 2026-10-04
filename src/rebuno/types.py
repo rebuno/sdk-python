@@ -66,8 +66,8 @@ class Resource(BaseModel):
     binding: Any = None
     checkpoint_ref: str = ""
     covered: bool = False
-    every_steps: int = 1
-    on_completion: bool = True
+    every_steps: int = 0
+    on_completion: bool = False
 
 
 class Event(BaseModel):

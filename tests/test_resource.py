@@ -29,10 +29,18 @@ class FakeKernel:
 
     async def register_resource(self, execution_id, *, lease, **registration):
         self.calls.append(("register", registration))
+        if not self.view.every_steps and registration["every_steps"]:
+            self.view = self.view.model_copy(
+                update={
+                    "every_steps": registration["every_steps"],
+                    "on_completion": registration["on_completion"],
+                }
+            )
         return self.view
 
     async def bind_resource(self, execution_id, key, *, lease, binding):
         self.calls.append(("bind", binding))
+        self.view = self.view.model_copy(update={"binding": binding})
 
     async def publish_checkpoints(self, execution_id, *, lease, **records):
         self.calls.append(("publish", records))
@@ -97,8 +105,14 @@ def running(kernel):
 async def test_new_execution_creates_binds_and_captures_a_baseline():
     kernel, driver = FakeKernel(), Driver()
     with running(kernel):
-        assert await resource("workspace", driver=driver) == "handle"
-        assert await resource("workspace", driver=driver) == "handle"
+        assert (
+            await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
+            == "handle"
+        )
+        assert (
+            await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
+            == "handle"
+        )
 
         assert driver.calls == [("create", None), ("checkpoint", "handle")]
         assert kernel.named("bind") == [{"id": "sbx-new"}]
@@ -116,11 +130,61 @@ async def test_new_execution_creates_binds_and_captures_a_baseline():
         assert len(kernel.named("register")) == 1
 
 
+@pytest.mark.parametrize("supports_checkpoints", [True, False])
+async def test_resource_without_policy_reuses_its_binding_without_captures(
+    supports_checkpoints,
+):
+    kernel = FakeKernel(decisions=[proceed("s1", due=False)])
+    driver = Driver()
+    if not supports_checkpoints:
+        driver.checkpoint = None
+    with running(kernel) as ctx:
+        await resource("workspace", driver=driver)
+        assert await step("write", lambda: "ok", resources=["workspace"]) == "ok"
+        await checkpoint_on_completion(ctx)
+    with running(kernel) as ctx:
+        await resource("workspace", driver=driver)
+        await checkpoint_on_completion(ctx)
+
+    assert driver.calls == [("create", None), ("open", {"id": "sbx-new"})]
+    assert kernel.named("publish") == []
+    assert all(
+        call["every_steps"] == 0 and call["on_completion"] is False
+        for call in kernel.named("register")
+    )
+
+
+async def test_checkpoint_policy_enables_captures_on_an_existing_binding():
+    kernel, driver = FakeKernel(), Driver()
+    with running(kernel):
+        await resource("workspace", driver=driver)
+    with running(kernel):
+        await resource(
+            "workspace", driver=driver, checkpoints=CheckpointPolicy(every_steps=5)
+        )
+
+    assert driver.calls == [
+        ("create", None),
+        ("open", {"id": "sbx-new"}),
+        ("checkpoint", "handle"),
+    ]
+    assert kernel.view.every_steps == 5
+    assert len(kernel.named("publish")) == 1
+
+
+async def test_checkpoint_policy_requires_a_checkpoint_method():
+    kernel, driver = FakeKernel(), Driver()
+    driver.checkpoint = None
+    with running(kernel), pytest.raises(ValueError, match="driver.checkpoint"):
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
+    assert driver.calls == []
+
+
 async def test_later_dispatch_opens_the_recorded_binding():
     view = Resource(key="workspace", binding={"id": "sbx-1"}, generation=3)
     kernel, driver = FakeKernel(view), Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         assert driver.calls == [
             ("open", {"id": "sbx-1"}),
@@ -133,7 +197,7 @@ async def test_fork_creates_its_resource_from_the_selected_checkpoint():
     view = Resource(key="workspace", checkpoint_ref="snap-5", covered=True)
     kernel, driver = FakeKernel(view), Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         assert driver.calls == [("create", "snap-5")]
         assert kernel.named("bind") == [{"id": "sbx-new"}]
@@ -150,7 +214,7 @@ async def test_missing_checkpoint_stops_resource_initialization():
     driver = Gone()
     with running(kernel):
         with pytest.raises(CheckpointUnavailable, match="expired"):
-            await resource("workspace", driver=driver)
+            await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
         assert driver.calls == [("create", "snap-5")]
         assert kernel.named("bind") == []
         assert kernel.named("publish") == []
@@ -171,7 +235,7 @@ async def test_due_capture_is_recorded_with_the_step_outcome():
     )
     driver = Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         @tool("write", resources=["workspace"])
         async def write() -> str:
@@ -202,7 +266,7 @@ async def test_failed_capture_keeps_the_step_outcome():
     )
     driver = Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
         driver.fail_checkpoint = True
 
         assert await step("setup", lambda: "done", resources=["workspace"]) == "done"
@@ -225,7 +289,7 @@ async def test_tools_and_local_steps_default_to_no_resource_changes():
     )
     driver = Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         @tool("read")
         async def read():
@@ -270,7 +334,7 @@ async def test_replayed_tool_does_not_run_or_capture():
     )
     driver = Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         def body():
             pytest.fail("a replay must not invoke the tool body")
@@ -286,7 +350,7 @@ async def test_failed_tool_captures_its_partial_changes():
     )
     driver = Driver()
     with running(kernel):
-        await resource("workspace", driver=driver)
+        await resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
 
         def body():
             raise ValueError("partial write")
@@ -309,7 +373,9 @@ async def test_capture_control_flow_stops_outcome_writes(signal):
         Resource(key="workspace", covered=True), [proceed("s1", due=True)]
     )
     with running(kernel):
-        await resource("workspace", driver=ControlFlowDriver())
+        await resource(
+            "workspace", driver=ControlFlowDriver(), checkpoints=CheckpointPolicy()
+        )
         with pytest.raises(signal):
             await step("write", lambda: "ok", resources=["workspace"])
         assert kernel.named("complete") == []
@@ -329,7 +395,9 @@ async def test_concurrent_tools_capture_before_the_next_mutation():
         [proceed("s1", due=True), proceed("s2", due=True)],
     )
     with running(kernel):
-        await resource("workspace", driver=StateDriver())
+        await resource(
+            "workspace", driver=StateDriver(), checkpoints=CheckpointPolicy()
+        )
 
         @tool("write", resources=["workspace"])
         async def write(value):
@@ -356,8 +424,15 @@ async def test_resource_calls_from_another_loop_use_the_owner_for_kernel_io():
     kernel, driver = LoopKernel(), Driver()
     with running(kernel):
         handle = await asyncio.to_thread(
-            lambda: asyncio.run(resource("workspace", driver=driver))
+            lambda: asyncio.run(
+                resource("workspace", driver=driver, checkpoints=CheckpointPolicy())
+            )
         )
         assert handle == "handle"
         assert kernel.named("publish")[0]["captures"][0]["checkpoint_ref"] == "snap-1"
-        assert await asyncio.wait_for(resource("workspace", driver=driver), 2) == handle
+        assert (
+            await asyncio.wait_for(
+                resource("workspace", driver=driver, checkpoints=CheckpointPolicy()), 2
+            )
+            == handle
+        )

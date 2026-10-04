@@ -29,18 +29,19 @@ async def resource(
     async with ctx._exclusive():
         if key in ctx._resources:
             return ctx._resources[key]["handle"]
-        policy = checkpoints or CheckpointPolicy()
         registration = {
             "key": key,
             "driver_id": driver.driver_id,
             "configuration": getattr(driver, "configuration", None),
             "coverage_reuse": bool(getattr(driver, "coverage_reuse", False)),
-            "every_steps": policy.every_steps,
-            "on_completion": policy.on_completion,
+            "every_steps": checkpoints.every_steps if checkpoints else 0,
+            "on_completion": checkpoints.on_completion if checkpoints else False,
         }
         view = await ctx._on_owner_loop(
             ctx._kernel.register_resource(ctx.id, lease=ctx._lease, **registration)
         )
+        if view.every_steps and not callable(getattr(driver, "checkpoint", None)):
+            raise ValueError("checkpoint policy requires driver.checkpoint()")
         if view.binding is not None:
             handle = await offload(driver.open, view.binding)
         else:
@@ -55,6 +56,6 @@ async def resource(
             "handle": handle,
             "registration": registration,
         }
-        if not view.covered:
+        if view.every_steps and not view.covered:
             await publish(ctx, [StepResource(key=key, generation=view.generation)])
         return handle
