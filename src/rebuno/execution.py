@@ -50,6 +50,8 @@ class ExecutionContext:
         self._superseded = False
         self._resources: dict[str, dict[str, Any]] = {}
         self._effects = asyncio.Lock()
+        self._in_flight = 0
+        self._waiting: list[asyncio.Future[bool]] = []
         try:
             self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
@@ -103,6 +105,51 @@ class ExecutionContext:
                 self._effects.release()
             else:
                 self._loop.call_soon_threadsafe(self._effects.release)
+
+    async def _call_started(self) -> None:
+        self._in_flight += 1
+
+    async def _call_finished(self) -> None:
+        self._in_flight -= 1
+        await self._suspend_if_idle()
+
+    async def _await_idle(self) -> bool:
+        """Resolves once every in-flight call waits, with whether the execution
+        suspended."""
+        waiter = asyncio.get_running_loop().create_future()
+        self._waiting.append(waiter)
+        await self._suspend_if_idle()
+        return await waiter
+
+    async def _suspend_if_idle(self) -> None:
+        if not self._waiting or len(self._waiting) < self._in_flight:
+            return
+        waiters, self._waiting = self._waiting, []
+        try:
+            suspended = self.suspension is not None or await self._kernel.suspend(
+                self.id, lease=self._lease
+            )
+        except Exception as e:
+            for w in waiters:
+                w.set_exception(e)
+        else:
+            for w in waiters:
+                w.set_result(suspended)
+        finally:
+            for w in waiters:
+                if not w.done():
+                    w.cancel()
+
+    async def await_subagent(self, step_id: str) -> Any:
+        if await self._on_owner_loop(self._await_idle()):
+            self.suspension = self.suspension or Blocked()
+            raise self.suspension
+        step = await self._on_owner_loop(self._kernel.get_step(self.id, step_id))
+        if step.error is not None:
+            raise ToolError(
+                _error_message(step.error), tool_id=step.target, step_id=step_id
+            )
+        return step.result
 
     async def _submit(
         self,
@@ -168,6 +215,23 @@ class ExecutionContext:
         ``resources`` names the registered resources the body may change.
         Defaults to none.
         """
+        await self._on_owner_loop(self._call_started())
+        try:
+            return await self._invoke_tool(
+                target, args, idempotency, run, kind, resources
+            )
+        finally:
+            await self._on_owner_loop(self._call_finished())
+
+    async def _invoke_tool(
+        self,
+        target: str,
+        args: dict[str, Any],
+        idempotency: str,
+        run: Callable[[], Any] | None,
+        kind: str,
+        resources: list[str] | None,
+    ) -> Any:
         async with self._exclusive(bool(self._resources)):
             step_id, dec = await self._submit(
                 kind=kind,
@@ -186,6 +250,7 @@ class ExecutionContext:
                 return dec.result
             self._raise_for_decision(dec)
 
+            token = _current_step.set(step_id)
             try:
                 result = run() if run is not None else None
                 if inspect.isawaitable(result):
@@ -198,6 +263,8 @@ class ExecutionContext:
                 if isinstance(e, ToolError):
                     raise
                 raise ToolError(str(e), tool_id=target, step_id=step_id) from e
+            finally:
+                _current_step.reset(token)
             captures = await capture(self, due)
             await self._on_owner_loop(
                 self._kernel.complete_step(
@@ -295,6 +362,7 @@ def _error_message(error: dict[str, Any]) -> str:
 _current: ContextVar[ExecutionContext | None] = ContextVar(
     "rebuno_execution", default=None
 )
+_current_step: ContextVar[str | None] = ContextVar("rebuno_step", default=None)
 
 
 class _ExecutionAccessor:

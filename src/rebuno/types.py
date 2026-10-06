@@ -15,6 +15,11 @@ class ExecutionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class SpawnedBy(BaseModel):
+    execution_id: str
+    step_id: str
+
+
 class Execution(BaseModel):
     id: str
     agent_id: str = ""
@@ -27,6 +32,8 @@ class Execution(BaseModel):
     forked_from: str | None = None
     fork_seq: int = 0
     restoration: dict[str, dict[str, Any]] | None = None
+    idempotency_key: str = ""
+    spawned_by: SpawnedBy | None = None
 
 
 class Step(BaseModel):

@@ -221,6 +221,12 @@ class KernelClient:
             "POST", f"/v0/executions/{execution_id}/heartbeat", b"", lease.headers()
         )
 
+    async def suspend(self, execution_id: str, *, lease: DispatchLease) -> bool:
+        resp = await self._send(
+            "POST", f"/v0/executions/{execution_id}/suspend", b"", lease.headers()
+        )
+        return resp.json()["suspended"]
+
     async def complete_execution(
         self, execution_id: str, *, lease: DispatchLease, output: Any, state: Any = None
     ) -> None:

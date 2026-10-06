@@ -6,7 +6,7 @@ from typing import Any
 import httpx2
 
 from rebuno.errors import NetworkError, error_from_response
-from rebuno.types import Approval, Event, Execution, Step
+from rebuno.types import Approval, Event, Execution, SpawnedBy, Step
 
 
 class Client:
@@ -61,6 +61,8 @@ class Client:
         *,
         session: str = "",
         parent_execution_id: str = "",
+        idempotency_key: str = "",
+        spawned_by: SpawnedBy | None = None,
     ) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
@@ -69,6 +71,10 @@ class Client:
             body["session"] = session
         if parent_execution_id:
             body["parent_execution_id"] = parent_execution_id
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+        if spawned_by is not None:
+            body["spawned_by"] = spawned_by.model_dump()
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 

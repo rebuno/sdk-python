@@ -7,6 +7,7 @@ Public surface:
   tool: decorator registering an async function as a Rebuno tool
   wrap_tool: route an arbitrary (non-decorator) tool through Rebuno
   step: record non-deterministic local work as a durable step
+  subagent: run another agent as a subagent of the calling tool
   http_client: an httpx2 client that records LLM calls as durable steps
   raise_for_refusal: turn a refused LLM call's provider error back into Blocked/PolicyError/...
   execution: ambient accessor for the current ExecutionContext
@@ -42,6 +43,7 @@ from rebuno.execution import Result, execution, previous
 from rebuno.http_client import RebunoTransport, http_client
 from rebuno.resource import CheckpointPolicy, resource
 from rebuno.step import step
+from rebuno.subagent import subagent
 from rebuno.tool import tool, wrap_tool
 
 __all__ = [
@@ -50,6 +52,7 @@ __all__ = [
     "tool",
     "wrap_tool",
     "step",
+    "subagent",
     "http_client",
     "RebunoTransport",
     "resource",
