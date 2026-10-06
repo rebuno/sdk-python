@@ -50,6 +50,7 @@ class ExecutionContext:
         self._superseded = False
         self._resources: dict[str, dict[str, Any]] = {}
         self._effects = asyncio.Lock()
+        self._effects_holder: str | None = None
         self._in_flight = 0
         self._waiting: list[asyncio.Future[bool]] = []
         try:
@@ -101,10 +102,14 @@ class ExecutionContext:
         try:
             yield
         finally:
-            if self._loop is None or asyncio.get_running_loop() is self._loop:
-                self._effects.release()
-            else:
-                self._loop.call_soon_threadsafe(self._effects.release)
+            self._release_effects()
+
+    def _release_effects(self) -> None:
+        self._effects_holder = None
+        if self._loop is None or asyncio.get_running_loop() is self._loop:
+            self._effects.release()
+        else:
+            self._loop.call_soon_threadsafe(self._effects.release)
 
     async def _call_started(self) -> None:
         self._in_flight += 1
@@ -141,9 +146,20 @@ class ExecutionContext:
                     w.cancel()
 
     async def await_subagent(self, step_id: str) -> Any:
-        if await self._on_owner_loop(self._await_idle()):
-            self.suspension = self.suspension or Blocked()
-            raise self.suspension
+        """The call's effects lock is released while it waits, so concurrent
+        calls can start their own subagents, and taken back before its step
+        completes."""
+        held = self._effects_holder == step_id
+        if held:
+            self._release_effects()
+        try:
+            if await self._on_owner_loop(self._await_idle()):
+                self.suspension = self.suspension or Blocked()
+                raise self.suspension
+        finally:
+            if held:
+                await self._on_owner_loop(self._effects.acquire())
+                self._effects_holder = step_id
         step = await self._on_owner_loop(self._kernel.get_step(self.id, step_id))
         if step.error is not None:
             raise ToolError(
@@ -232,7 +248,8 @@ class ExecutionContext:
         kind: str,
         resources: list[str] | None,
     ) -> Any:
-        async with self._exclusive(bool(self._resources)):
+        locked = bool(self._resources)
+        async with self._exclusive(locked):
             step_id, dec = await self._submit(
                 kind=kind,
                 target=target,
@@ -240,6 +257,8 @@ class ExecutionContext:
                 idempotency=idempotency,
                 resources=resources,
             )
+            if locked:
+                self._effects_holder = step_id
             due = [r for r in dec.resources if r.due]
 
             if dec.decision == "replay":
