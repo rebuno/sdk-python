@@ -45,7 +45,7 @@ class FakeClient:
     def __init__(self):
         self.created = []
 
-    async def create(self, agent_id, input=None, *, spawned_by):
+    async def create(self, agent_id, input=None, *, session="", spawned_by):
         self.created.append((agent_id, spawned_by.execution_id, spawned_by.step_id))
 
 

@@ -8,13 +8,19 @@ from rebuno.types import SpawnedBy
 
 
 async def subagent(
-    agent_id: str, input: Any = None, *, client: Client | None = None
+    agent_id: str,
+    input: Any = None,
+    *,
+    session: str = "",
+    client: Client | None = None,
 ) -> Any:
     """Run ``agent_id`` as a subagent of the calling tool and return its output.
 
     Return the result from the tool body: the kernel records the subagent's
     outcome as the tool's step. Once every in-flight call of the execution
     waits, the execution suspends, and the handler reruns after they settle.
+
+    Subagents started with the same ``session`` continue one conversation.
 
     ``client`` needs the ``executions:write`` scope. Defaults to ``Client()``.
     """
@@ -24,8 +30,8 @@ async def subagent(
         raise RuntimeError(f"subagent('{agent_id}') called outside a tool body.")
     spawned_by = SpawnedBy(execution_id=ctx.id, step_id=step_id)
     if client is not None:
-        await client.create(agent_id, input, spawned_by=spawned_by)
+        await client.create(agent_id, input, session=session, spawned_by=spawned_by)
     else:
         async with Client() as owned:
-            await owned.create(agent_id, input, spawned_by=spawned_by)
+            await owned.create(agent_id, input, session=session, spawned_by=spawned_by)
     return await ctx.await_subagent(step_id)
