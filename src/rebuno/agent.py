@@ -12,6 +12,7 @@ from typing import Any, NamedTuple
 
 import httpx2
 from fastapi import FastAPI, Request, Response
+from pydantic import BaseModel
 
 from rebuno._internal import InputBinder
 from rebuno._internal.call import offload
@@ -37,6 +38,14 @@ from rebuno.execution import (
 logger = logging.getLogger("rebuno.agent")
 
 
+def _json_schema(
+    schema: dict[str, Any] | type[BaseModel] | None,
+) -> dict[str, Any] | None:
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        return schema.model_json_schema()
+    return schema
+
+
 class _Running(NamedTuple):
     lease: DispatchLease
     task: asyncio.Task
@@ -53,7 +62,11 @@ class Agent:
         base_url: str | None = None,
         webhook_path: str = "/webhook",
         kernel_timeout: float = 35.0,
+        description: str | None = None,
+        output_schema: dict[str, Any] | type[BaseModel] | None = None,
     ):
+        """``description``, ``output_schema``, and the JSON Schema of the handler's
+        parameters or Pydantic model are published to the kernel."""
         if not agent_id:
             raise ValueError("agent_id must not be empty")
         self.agent_id = agent_id
@@ -68,6 +81,9 @@ class Agent:
         if not self.base_url:
             raise ValueError("base_url required (set REBUNO_URL or pass base_url=)")
         self.webhook_path = webhook_path
+        self.description = description
+        self.output_schema = output_schema
+        self._metadata: asyncio.Task | None = None
         self._process: Callable[..., Any] | None = None
         self._binder: InputBinder | None = None
         self._http = httpx2.AsyncClient(base_url=self.base_url, timeout=kernel_timeout)
@@ -83,6 +99,32 @@ class Agent:
         self._process = process
         self._binder = InputBinder(process)
 
+    async def publish_metadata(self) -> None:
+        """Publish the agent's description and schemas to the kernel.
+
+        The app publishes on startup and on the first dispatch; a network
+        failure is retried on the next dispatch.
+        """
+        await self._ensure_metadata()
+
+    def _ensure_metadata(self) -> asyncio.Task:
+        if self._metadata is None:
+            self._metadata = asyncio.create_task(self._publish_metadata())
+        return self._metadata
+
+    async def _publish_metadata(self) -> None:
+        try:
+            await self._kernel.set_metadata(
+                description=self.description,
+                input_schema=self._binder.json_schema() if self._binder else None,
+                output_schema=_json_schema(self.output_schema),
+            )
+        except (httpx2.ConnectError, httpx2.TimeoutException):
+            self._metadata = None
+            logger.exception("publishing agent metadata failed")
+        except Exception:
+            logger.exception("publishing agent metadata failed")
+
     @property
     def app(self) -> FastAPI:
         if self._app is None:
@@ -92,6 +134,7 @@ class Agent:
     def _build_app(self) -> FastAPI:
         @asynccontextmanager
         async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+            self._ensure_metadata()
             yield
             # ASGI shutdown runs on the loop that opened the kernel client's
             # connections, so this never touches a torn-down transport.
@@ -105,6 +148,7 @@ class Agent:
             sig = request.headers.get("Rebuno-Signature", "")
             if not self._verify(raw, sig):
                 return Response(status_code=401)
+            self._ensure_metadata()
             payload = json.loads(raw)
             execution_id = payload["execution_id"]
             lease = DispatchLease(
@@ -221,6 +265,8 @@ class Agent:
             return
         self._closed = True
         tasks = self._all_tasks()
+        if self._metadata is not None:
+            tasks.append(self._metadata)
         for task in tasks:
             if not task.done():
                 task.cancel()

@@ -75,6 +75,22 @@ class KernelClient:
             raise error_from_response(resp)
         return resp
 
+    async def set_metadata(
+        self,
+        *,
+        description: str | None,
+        input_schema: dict[str, Any] | None,
+        output_schema: dict[str, Any] | None,
+    ) -> None:
+        body = json.dumps(
+            {
+                "description": description,
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+            }
+        ).encode("utf-8")
+        await self._send("PUT", f"/v0/agents/{self._agent_id}/metadata", body)
+
     async def get_execution(self, execution_id: str) -> Execution:
         resp = await self._send("GET", f"/v0/executions/{execution_id}", b"")
         return Execution.model_validate(resp.json())

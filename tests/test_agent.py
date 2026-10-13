@@ -41,6 +41,10 @@ class FakeKernel:
     async def fail_execution(self, execution_id, *, lease, error):
         self.failed = error
 
+    async def set_metadata(self, **metadata):
+        self.metadata = getattr(self, "metadata", [])
+        self.metadata.append(metadata)
+
 
 def _payload(
     execution_id="e1", dispatch_id="d1", attempt=1, lease_timeout=120.0
@@ -496,3 +500,44 @@ async def test_denied_llm_call_records_the_kernel_reason():
     k = DenyingKernel({"prompt": "hi"})
     await run_dispatch(proc, k)
     assert k.failed == f"policy_denied: {REASON}"
+
+
+async def test_publishes_metadata_once_with_the_handler_input_schema():
+    async def research(topic: str, depth: int = 1):
+        return topic
+
+    k = FakeKernel({"topic": "go"})
+    agent = Agent("a", secret=SECRET, base_url="http://k", description="Researches.")
+    agent.bind(research)
+    async with build(agent, k) as client:
+        await post_webhook(client)
+        await post_webhook(client, dispatch_id="d2")
+        await agent.publish_metadata()
+        await agent.join()
+
+    assert len(k.metadata) == 1
+    published = k.metadata[0]
+    assert published["description"] == "Researches."
+    assert published["output_schema"] is None
+    schema = published["input_schema"]
+    assert schema["required"] == ["topic"]
+    assert schema["properties"]["topic"]["type"] == "string"
+    assert schema["properties"]["depth"]["default"] == 1
+
+
+async def test_metadata_publish_retries_after_a_network_failure():
+    import httpx2
+
+    class Flaky(FakeKernel):
+        async def set_metadata(self, **metadata):
+            await super().set_metadata(**metadata)
+            if len(self.metadata) == 1:
+                raise httpx2.ConnectError("refused")
+
+    k = Flaky({"prompt": "hi"})
+    agent = make_agent(_process_ok)
+    agent._kernel = k
+    await agent.publish_metadata()
+    await agent.publish_metadata()
+    await agent.publish_metadata()
+    assert len(k.metadata) == 2

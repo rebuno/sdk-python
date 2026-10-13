@@ -5,7 +5,7 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 
 class InputBinder:
@@ -19,6 +19,7 @@ class InputBinder:
             hints = typing.get_type_hints(fn)
         except Exception:
             hints = {}
+        self.hints = hints
 
         self.shape, self.model = self._classify(sig, hints)
         self.required = [
@@ -43,6 +44,32 @@ class InputBinder:
             if ann is inspect.Parameter.empty or ann is Any or ann is dict:
                 return "raw", None
         return "kwargs", None
+
+    def json_schema(self) -> dict[str, Any] | None:
+        """The JSON Schema of the input the handler accepts, or ``None`` when the
+        handler takes the raw input or its annotations have no JSON Schema."""
+        if self.shape == "raw":
+            return None
+        try:
+            if self.shape == "model":
+                assert self.model is not None
+                return self.model.model_json_schema()
+            fields: dict[str, Any] = {
+                name: (
+                    self.hints.get(name, Any),
+                    ... if p.default is inspect.Parameter.empty else p.default,
+                )
+                for name, p in self.sig.parameters.items()
+                if p.name != "self"
+                and p.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            }
+            return create_model(self.fn.__name__, **fields).model_json_schema()
+        except Exception:
+            return None
 
     def bind(self, execution_input: Any) -> dict[str, Any]:
         """Convert an execution's input into the kwargs the handler expects.
