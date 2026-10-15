@@ -63,6 +63,7 @@ class Client:
         parent_execution_id: str = "",
         idempotency_key: str = "",
         spawned_by: SpawnedBy | None = None,
+        on_behalf_of: str = "",
     ) -> Execution:
         body: dict[str, Any] = {"agent_id": agent_id}
         if input is not None:
@@ -75,6 +76,8 @@ class Client:
             body["idempotency_key"] = idempotency_key
         if spawned_by is not None:
             body["spawned_by"] = spawned_by.model_dump()
+        if on_behalf_of:
+            body["on_behalf_of"] = on_behalf_of
         resp = await self._request("POST", "/v0/executions", json=body)
         return Execution.model_validate(resp.json())
 
@@ -141,13 +144,17 @@ class Client:
         return Approval.model_validate(resp.json())
 
     async def grant_approval(
-        self, approval_id: str, *, decided_by: str, rationale: str = ""
+        self, approval_id: str, *, decided_by: str = "", rationale: str = ""
     ) -> None:
-        body = {"decided_by": decided_by, "rationale": rationale}
+        body = {"rationale": rationale}
+        if decided_by:
+            body["decided_by"] = decided_by
         await self._request("POST", f"/v0/approvals/{approval_id}/grant", json=body)
 
     async def deny_approval(
-        self, approval_id: str, *, decided_by: str, rationale: str = ""
+        self, approval_id: str, *, decided_by: str = "", rationale: str = ""
     ) -> None:
-        body = {"decided_by": decided_by, "rationale": rationale}
+        body = {"rationale": rationale}
+        if decided_by:
+            body["decided_by"] = decided_by
         await self._request("POST", f"/v0/approvals/{approval_id}/deny", json=body)

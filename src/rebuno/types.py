@@ -34,6 +34,9 @@ class Execution(BaseModel):
     restoration: dict[str, dict[str, Any]] | None = None
     idempotency_key: str = ""
     spawned_by: SpawnedBy | None = None
+    created_by: str = ""
+    on_behalf_of: str = ""
+    subject_groups: list[str] = []
 
 
 class Step(BaseModel):
@@ -92,4 +95,5 @@ class Approval(BaseModel):
     status: str = ""
     message: str = ""
     decided_by: str = ""
+    asserted_by: str = ""
     rationale: str = ""

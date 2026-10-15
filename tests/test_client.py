@@ -53,12 +53,13 @@ async def test_cancel_and_approvals():
         if req.url.path.endswith("/cancel"):
             return httpx2.Response(204)
         if "/grant" in req.url.path:
+            assert json.loads(req.content) == {"rationale": ""}
             return httpx2.Response(204)
         return httpx2.Response(200, json=[])
 
     c = make_client(handler)
     await c.cancel("e1")
-    await c.grant_approval("ap1", decided_by="me")
+    await c.grant_approval("ap1")
     assert await c.list_approvals() == []
 
 
