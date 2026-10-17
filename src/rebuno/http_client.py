@@ -66,8 +66,9 @@ class RebunoTransport(httpx2.AsyncBaseTransport):
             return _replay_response(request, dec.result)
 
         resp = await self._inner.handle_async_request(request)
-        if resp.status_code < 400 and _is_event_stream(
-            resp.headers.get("content-type", "")
+        if resp.status_code < 400 and (
+            payload.get("stream") is True
+            or _is_event_stream(resp.headers.get("content-type", ""))
         ):
             content_type = resp.headers.get("content-type", "text/event-stream")
             tee = _TeeStream(ctx, step_id, resp, content_type)
