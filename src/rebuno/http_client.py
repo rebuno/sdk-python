@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx2
@@ -123,8 +124,16 @@ class _TeeStream(httpx2.AsyncByteStream):
         self._pending = ""
         self._seq = 0
         self._done = False
+        self._iter: AsyncIterator[bytes] | None = None
 
-    async def __aiter__(self):
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        # A consumer may iterate again after stopping early (e.g. to drain the
+        # body after [DONE]); resume the same pass over the provider's bytes.
+        if self._iter is None:
+            self._iter = self._tee()
+        return self._iter
+
+    async def _tee(self) -> AsyncIterator[bytes]:
         last_flush = time.monotonic()
         try:
             async for raw in self._resp.aiter_raw():

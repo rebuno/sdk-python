@@ -261,6 +261,30 @@ async def test_streaming_recorded_when_consumer_stops_at_done_without_draining()
         _reset_current(token)
 
 
+async def test_streaming_recorded_when_consumer_drains_the_stream_after_done():
+    kernel = StepKernel()
+    calls = {"n": 0}
+    token = _set_current(_ctx(kernel))
+    try:
+        async with (
+            _client(_sse_handler(calls)) as client,
+            client.stream(
+                "POST", "/v1/messages", json={**REQUEST, "stream": True}
+            ) as r,
+        ):
+            got = b""
+            async for chunk in r.aiter_raw():
+                got += chunk
+                if b"[DONE]" in got:
+                    break
+            async for chunk in r.stream:
+                got += chunk
+        assert got == SSE
+        assert kernel.completed
+    finally:
+        _reset_current(token)
+
+
 async def test_streaming_midstream_error_not_recorded_as_success():
     kernel = StepKernel()
 
